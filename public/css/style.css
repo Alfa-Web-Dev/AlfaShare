@@ -76,3 +76,232 @@ input, textarea, [contenteditable="true"]{
  .sidebar{z-index:20}
  .sidebar .nav-item{padding-right:48px}
 }
+
+/* =========================================================
+   AlfaShare Mobile Responsive Fix
+   ========================================================= */
+
+@media (max-width: 768px) {
+
+    html,
+    body {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        overflow-x: hidden;
+    }
+
+    body {
+        margin: 0;
+    }
+
+    * {
+        box-sizing: border-box;
+        max-width: 100%;
+    }
+
+    /* Main application layout */
+    .app,
+    .app-shell,
+    .layout,
+    .main-layout,
+    .page-layout {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        margin: 0 !important;
+    }
+
+    /* Sidebar becomes mobile drawer */
+    .sidebar {
+        position: fixed !important;
+        left: -280px;
+        top: 0;
+        bottom: 0;
+        width: 280px !important;
+        max-width: 85vw !important;
+        z-index: 9999;
+        transition: left .25s ease;
+    }
+
+    .sidebar.open,
+    .sidebar.active,
+    .sidebar.show {
+        left: 0 !important;
+    }
+
+    /* Main content */
+    main,
+    .main,
+    .content,
+    .main-content,
+    .page-content {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        margin: 0 !important;
+        padding: 18px 14px !important;
+    }
+
+    /* Header */
+    header,
+    .topbar,
+    .header {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
+
+    /* Cards */
+    .card,
+    .panel,
+    .section,
+    .settings-card,
+    .chat-card,
+    .share-card {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+    }
+
+    /* Grid becomes single column */
+    .grid,
+    .content-grid,
+    .settings-grid,
+    .share-grid,
+    .chat-grid {
+        display: grid !important;
+        grid-template-columns: 1fr !important;
+        width: 100% !important;
+    }
+
+    /* Any 2/3 column layout */
+    .columns,
+    .two-column,
+    .three-column {
+        display: flex !important;
+        flex-direction: column !important;
+        width: 100% !important;
+    }
+
+    .columns > *,
+    .two-column > *,
+    .three-column > * {
+        width: 100% !important;
+        max-width: 100% !important;
+        flex: 1 1 100% !important;
+    }
+
+    /* Chat */
+    .chat-container,
+    .chat-window,
+    .chat-panel,
+    .messages {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
+
+    .messages {
+        overflow-x: hidden !important;
+    }
+
+    /* Chat input */
+    .chat-input,
+    .message-input,
+    textarea,
+    input {
+        max-width: 100% !important;
+    }
+
+    /* Share/drop zone */
+    .dropzone,
+    .drop-zone,
+    .file-dropzone,
+    .upload-zone {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
+
+    /* Buttons */
+    button {
+        max-width: 100%;
+    }
+
+    /* Peer address */
+    .peer-address,
+    .address-box,
+    .identity {
+        width: 100% !important;
+        max-width: 100% !important;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    /* Settings theme grid */
+    .themes,
+    .theme-grid,
+    .theme-options {
+        display: grid !important;
+        grid-template-columns: repeat(2, 1fr) !important;
+        width: 100% !important;
+        gap: 10px !important;
+    }
+
+    /* Prevent long text from creating horizontal scrolling */
+    h1,
+    h2,
+    h3,
+    h4,
+    p,
+    span,
+    div {
+        overflow-wrap: anywhere;
+    }
+
+    /* Mobile hamburger */
+    .menu-toggle,
+    .hamburger,
+    .mobile-menu {
+        display: flex !important;
+    }
+
+    /* Hide desktop-only elements */
+    .desktop-only {
+        display: none !important;
+    }
+
+}
+
+/* Small phones */
+@media (max-width: 480px) {
+
+    main,
+    .main,
+    .content,
+    .main-content,
+    .page-content {
+        padding: 14px 10px !important;
+    }
+
+    h1 {
+        font-size: 30px !important;
+    }
+
+    h2 {
+        font-size: 24px !important;
+    }
+
+    .themes,
+    .theme-grid,
+    .theme-options {
+        grid-template-columns: repeat(2, 1fr) !important;
+    }
+
+    button {
+        min-height: 42px;
+    }
+}
