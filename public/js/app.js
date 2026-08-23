@@ -1,324 +1,3309 @@
+/* =========================================================
+   AlfaShare — Core P2P Application
+   ========================================================= */
+
 (() => {
-  "use strict";
+    "use strict";
 
-  /* AlfaShare 3.0
-     Direct WebRTC DataChannel. The signaling server only exchanges SDP/ICE.
-     File bytes never intentionally travel through Socket.IO.
-  */
-  const CHUNK = 128 * 1024;
-  const HIGH_WATER = 24 * 1024 * 1024;
-  const LOW_WATER = 6 * 1024 * 1024;
-  const ACK_WINDOW = 128; // ~16 MB acknowledged at a time
-  const ICE = [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun.cloudflare.com:3478" }
-  ];
-  const $ = id => document.getElementById(id);
-  const el = {
-    statusDot:$('statusDot'), statusText:$('statusText'), serverText:$('serverText'), mobileStatus:$('mobileStatus'),
-    sidePeerId:$('sidePeerId'), settingsPeerId:$('settingsPeerId'), copySideId:$('copySideId'), copySettingsId:$('copySettingsId'),
-    serverUrl:$('serverUrl'), remote:$('remotePeerId'), connect:$('connectBtn'), paste:$('pastePeerBtn'), connectMessage:$('connectMessage'),
-    chatConnection:$('chatConnection'), chatPeerName:$('chatPeerName'), chatPeerSub:$('chatPeerSub'), chatDisconnect:$('chatDisconnect'),
-    peerAvatar:$('peerAvatar'), infoAvatar:$('infoAvatar'), infoPeer:$('infoPeer'), infoPeerAddress:$('infoPeerAddress'),
-    messages:$('messages'), chatForm:$('chatForm'), chatInput:$('chatInput'), send:$('sendBtn'), emojiBtn:$('emojiBtn'), emojiPanel:$('emojiPanel'),
-    attachBtn:$('attachBtn'), cameraBtn:$('cameraBtn'), chatFileInput:$('chatFileInput'), cameraInput:$('cameraInput'), gifPanel:$('gifPanel'), gifUrl:$('gifUrl'), sendGif:$('sendGif'), gifResults:$('gifResults'),
-    dropzone:$('dropzone'), fileInput:$('fileInput'), chooseFiles:$('chooseFiles'), transfers:$('transfers'), history:$('history'), clearHistory:$('clearHistory'), speedStat:$('speedStat'),
-    toast:$('toast'), themes:$('themes'), nav:document.querySelectorAll('.nav-item'), tabs:document.querySelectorAll('.tab'),
-    openSettings:$('openSettings'), openSettings2:$('openSettings2'), menuBtn:$('menuBtn'), closeMenuBtn:$('closeMenuBtn'), sidebar:$('sidebar'),
-    installBtn:$('installBtn'), installStatus:$('installStatus'), profileName:$('profileName'), saveProfile:$('saveProfile'), profileStatus:$('profileStatus'), contacts:$('contacts'), clearContacts:$('clearContacts')
-  };
+    /* =====================================================
+       CONFIG
+    ===================================================== */
 
-  const storage = { history:'alfashare-history', peer:'alfashare-peer-id', theme:'alfashare-theme', name:'alfashare-profile-name', contacts:'alfashare-contacts', chats:'alfashare-chats' };
-  let peerId = getPeerId();
-  let profileName = (localStorage.getItem(storage.name)||'').trim().slice(0,40) || 'AlfaShare user';
-  let socket = null, pc = null, channel = null, remotePeer = null, remotePeerName = '', pendingCandidates = [];
-  const outgoing = new Map();
-  const incoming = new Map();
-  let receiveQueue = Promise.resolve();
-  let deferredInstallPrompt = null;
+    const CHUNK_SIZE = 16 * 1024;
 
-  function makePeerId(){
-    const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    const bytes=crypto.getRandomValues(new Uint8Array(8));
-    return [...bytes].map(n=>alphabet[n%alphabet.length]).join('');
-  }
-  function getPeerId(){
-    // Stable identity for this browser/origin. It changes only if site storage is cleared.
+    const MAX_BUFFERED_AMOUNT = 4 * 1024 * 1024;
 
-    const saved=(localStorage.getItem(storage.peer)||'').toUpperCase();
-    if(/^[A-Z0-9]{8}$/.test(saved)) return saved;
-    const id=makePeerId(); localStorage.setItem(storage.peer,id); return id;
-  }
-  function setIdentity(){ el.sidePeerId.textContent=peerId; el.settingsPeerId.textContent=peerId; el.serverUrl.textContent=location.origin; if(el.profileName)el.profileName.value=profileName; }
-  setIdentity();
+    const BUFFERED_LOW_THRESHOLD = 512 * 1024;
 
-  function toast(message){ el.toast.textContent=message; el.toast.classList.add('show'); clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.toast.classList.remove('show'),2600); }
-  function setServerStatus(text,on=false){
-    el.statusText.textContent=text; el.statusDot.classList.toggle('on',on); el.mobileStatus.classList.toggle('on',on);
-  }
-  function setPeerUI(connected){
-    el.chatInput.disabled=!connected; el.send.disabled=!connected;
-    el.chatConnection.textContent=connected?`Connected • ${remotePeer}`:'Not connected';
-    el.chatPeerName.textContent=connected?(remotePeerName||remotePeer):'No peer connected';
-    el.chatPeerSub.textContent=connected?'Direct encrypted connection':'Connect from Settings'; if(connected&&remotePeer)loadChatHistory(remotePeer);
-    const letter=connected?(remotePeerName||remotePeer)[0].toUpperCase():'?'; el.peerAvatar.textContent=letter; el.infoAvatar.textContent=letter;
-    el.infoPeer.textContent=connected?(remotePeerName||remotePeer):'Not connected'; el.infoPeerAddress.textContent=connected?remotePeer:'—';
-  }
-  function showTab(name){
-    el.nav.forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
-    el.tabs.forEach(t=>t.classList.toggle('active',t.id===`tab-${name}`));
-    el.sidebar.classList.remove('open');
-  }
-  el.nav.forEach(b=>b.addEventListener('click',()=>showTab(b.dataset.tab)));
-  el.openSettings?.addEventListener('click',()=>showTab('settings'));
-  el.openSettings2?.addEventListener('click',()=>showTab('settings'));
-  el.menuBtn.addEventListener('click',()=>el.sidebar.classList.toggle('open'));
-  el.closeMenuBtn.addEventListener('click',()=>el.sidebar.classList.remove('open'));
-  document.addEventListener('keydown',e=>{if(e.key==='Escape')el.sidebar.classList.remove('open')});
-  document.addEventListener('click',e=>{if(innerWidth<=900&&el.sidebar.classList.contains('open')&&!el.sidebar.contains(e.target)&&e.target!==el.menuBtn)el.sidebar.classList.remove('open')});
+    const ICE_SERVERS = [
+        {
+            urls: [
+                "stun:stun.l.google.com:19302",
+                "stun:stun1.l.google.com:19302"
+            ]
+        }
+    ];
 
-  async function copyPeer(){try{await navigator.clipboard.writeText(peerId);toast('Peer code copied')}catch{toast(peerId)}}
-  el.copySideId.onclick=copyPeer; el.copySettingsId.onclick=copyPeer;
-
-  function signal(to,data){ if(socket?.connected) socket.emit('signal',{to,data}); }
-  function createPC(id,initiator){
-    try{pc?.close()}catch{}
-    pendingCandidates=[];
-    pc=new RTCPeerConnection({iceServers:ICE});
-    pc.onicecandidate=e=>{if(e.candidate)signal(id,{type:'candidate',candidate:e.candidate})};
-    pc.onconnectionstatechange=()=>{
-      if(pc?.connectionState==='connected'){setServerStatus('P2P Connected',true);setPeerUI(true);toast('Direct connection ready')}
-      if(['failed','disconnected','closed'].includes(pc?.connectionState)){setPeerUI(false);setServerStatus(socket?.connected?'Server Connected':'Disconnected',!!socket?.connected)}
+    const STORAGE_KEYS = {
+        peerId: "alfashare_peer_id",
+        name: "alfashare_name",
+        theme: "alfashare_theme",
+        history: "alfashare_transfer_history",
+        contacts: "alfashare_contacts"
     };
-    pc.ondatachannel=e=>bindChannel(e.channel);
-    if(initiator)bindChannel(pc.createDataChannel('alfashare',{ordered:true}));
-  }
-  function bindChannel(dc){
-    channel=dc; channel.binaryType='arraybuffer'; channel.bufferedAmountLowThreshold=LOW_WATER;
-    channel.onopen=()=>{setServerStatus('P2P Connected',true);setPeerUI(true);toast('Direct connection ready')};
-    channel.onclose=()=>{setPeerUI(false);setServerStatus(socket?.connected?'Server Connected':'Disconnected',!!socket?.connected)};
-    channel.onerror=()=>toast('P2P data channel error');
-    channel.onmessage=e=>{receiveQueue=receiveQueue.then(()=>handleChannelData(e.data)).catch(err=>{console.error(err);toast('Transfer error — connection kept safe')})};
-  }
-  function normalizeCode(v){return String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,8)}
-  el.remote.oninput=e=>e.target.value=normalizeCode(e.target.value);
-  el.remote.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();connectPeer()}};
-  el.paste.onclick=async()=>{try{el.remote.value=normalizeCode(await navigator.clipboard.readText());el.remote.focus();}catch{el.remote.focus();toast('Paste permission unavailable — type the code')}};
-  function loadContacts(){ try{return JSON.parse(localStorage.getItem(storage.contacts)||'[]')}catch{return []} }
-  function saveContact(id,name){ if(!id)return; const list=loadContacts().filter(x=>x.id!==id); list.unshift({id,name:name||id,lastSeen:Date.now()}); localStorage.setItem(storage.contacts,JSON.stringify(list.slice(0,30))); renderContacts(); }
-  function renderContacts(){ if(!el.contacts)return; const list=loadContacts(); el.contacts.innerHTML=''; if(!list.length){el.contacts.innerHTML='<div class="empty-history">No connected peers yet.</div>';return;} list.forEach(x=>{const row=document.createElement('button');row.type='button';row.className='history-row contact-row';row.innerHTML=`<span class="history-icon">●</span><div><strong>${escapeHtml(x.name||x.id)}</strong><small>${escapeHtml(x.id)} • Last connected ${new Date(x.lastSeen).toLocaleDateString()}</small></div>`;row.onclick=()=>{showTab('settings');el.remote.value=x.id;connectPeer(x.id)};el.contacts.appendChild(row)}) }
-  renderContacts();
-  el.clearContacts?.addEventListener('click',()=>{localStorage.removeItem(storage.contacts);renderContacts();toast('Contacts cleared')});
-  el.saveProfile?.addEventListener('click',()=>{profileName=(el.profileName.value.trim().slice(0,40)||'AlfaShare user');localStorage.setItem(storage.name,profileName);el.profileStatus.textContent='Saved ✓';toast('Profile name saved'); if(socket?.connected)socket.emit('register',peerId,{name:profileName},()=>{});});
 
-  async function connectPeer(preferredId){
-    const target=normalizeCode(preferredId || el.remote.value); el.remote.value=target;
-    if(!socket?.connected){el.connectMessage.textContent='Signaling server is offline.';toast('AlfaShare server is offline');return false;}
-    if(!/^[A-Z0-9]{8}$/.test(target)){el.connectMessage.textContent='Enter the 8-character peer code.';return false;}
-    if(target===peerId){el.connectMessage.textContent='That is your own peer code.';return false;}
-    const status=await new Promise(resolve=>{
-      let done=false;
-      const finish=result=>{if(done)return;done=true;clearTimeout(timer);resolve(result||{online:false});};
-      const timer=setTimeout(()=>finish({online:false,timeout:true}),7000);
-      try{socket.emit('check-peer',target,finish)}catch(error){finish({online:false,error:String(error?.message||error)})}
-    });
-    if(!status.online){
-      const message=status.timeout?'Peer lookup timed out. Please try again.':(status.error?'Could not check peer status. Please try again.':'This peer is offline.');
-      el.connectMessage.textContent=message;
-      toast(message);
-      return false;
+
+    /* =====================================================
+       DOM
+    ===================================================== */
+
+    const $ = (selector) =>
+        document.querySelector(selector);
+
+
+    const $$ = (selector) =>
+        Array.from(document.querySelectorAll(selector));
+
+
+    const connectionStatus =
+        $("#connectionStatus");
+
+    const connectionDot =
+        $("#connectionDot");
+
+    const peerCodeInput =
+        $("#peerCodeInput");
+
+    const connectBtn =
+        $("#connectBtn");
+
+    const disconnectBtn =
+        $("#disconnectBtn");
+
+    const connectedPeer =
+        $("#connectedPeer");
+
+    const connectedPeerName =
+        $("#connectedPeerName");
+
+    const connectedPeerStatus =
+        $("#connectedPeerStatus");
+
+    const chooseFileBtn =
+        $("#chooseFileBtn");
+
+    const fileInput =
+        $("#fileInput");
+
+    const dropZone =
+        $("#dropZone");
+
+    const transferList =
+        $("#transferList");
+
+    const clearTransfersBtn =
+        $("#clearTransfersBtn");
+
+    const messages =
+        $("#messages");
+
+    const messageInput =
+        $("#messageInput");
+
+    const sendMessageBtn =
+        $("#sendMessageBtn");
+
+    const emojiBtn =
+        $("#emojiBtn");
+
+    const emojiPanel =
+        $("#emojiPanel");
+
+    const chatFileBtn =
+        $("#chatFileBtn");
+
+    const nameInput =
+        $("#nameInput");
+
+    const profileAvatar =
+        $("#profileAvatar");
+
+    const myPeerCode =
+        $("#myPeerCode");
+
+    const copyPeerCodeBtn =
+        $("#copyPeerCodeBtn");
+
+    const chatPeerName =
+        $("#chatPeerName");
+
+    const chatPeerStatus =
+        $("#chatPeerStatus");
+
+    const toast =
+        $("#toast");
+
+
+    /* =====================================================
+       STATE
+    ===================================================== */
+
+    let socket = null;
+
+    let myPeerId = null;
+
+    let myName = null;
+
+    let remotePeerId = null;
+
+    let remotePeerName = null;
+
+    let peerConnection = null;
+
+    let dataChannel = null;
+
+    let isInitiator = false;
+
+    let pendingCandidates = [];
+
+    let reconnectTimer = null;
+
+    let toastTimer = null;
+
+    let transferCounter = 0;
+
+    const incomingTransfers = new Map();
+
+    const outgoingTransfers = new Map();
+
+
+    /* =====================================================
+       UTILITY
+    ===================================================== */
+
+    function showToast(message) {
+
+        if (!toast) return;
+
+        toast.textContent = message;
+
+        toast.classList.add("show");
+
+        clearTimeout(toastTimer);
+
+        toastTimer = setTimeout(() => {
+
+            toast.classList.remove("show");
+
+        }, 2800);
     }
-    remotePeer=target; remotePeerName=status.name||target; saveContact(target,remotePeerName); setPeerUI(false); el.connectMessage.textContent=`Connecting to ${remotePeerName}…`;
-    createPC(target,true);
-    try{const offer=await pc.createOffer();await pc.setLocalDescription(offer);signal(target,{type:'offer',sdp:pc.localDescription})}
-    catch(e){console.error(e);el.connectMessage.textContent='Could not start connection.';toast('Connection could not be started')}
-    return true;
-  }
-  el.connect.onclick=async()=>{ try{ await connectPeer(); }catch(error){ console.error(error); el.connectMessage.textContent='Connection error. Please try again.'; toast('Connection error — please try again'); } };
 
-  async function onSignal({from,name,data}){
-    remotePeer=from; remotePeerName=name||from; saveContact(from,remotePeerName);
-    try{
-      if(data.type==='offer'){
-        createPC(from,false); await pc.setRemoteDescription(data.sdp);
-        const answer=await pc.createAnswer(); await pc.setLocalDescription(answer); signal(from,{type:'answer',sdp:pc.localDescription});
-      }else if(data.type==='answer'&&pc){await pc.setRemoteDescription(data.sdp)}
-      else if(data.type==='candidate'){
-        if(pc?.remoteDescription)await pc.addIceCandidate(data.candidate); else pendingCandidates.push(data.candidate);
-      }
-      if(pc?.remoteDescription&&pendingCandidates.length){for(const c of pendingCandidates)await pc.addIceCandidate(c);pendingCandidates=[]}
-    }catch(e){console.error(e);el.connectMessage.textContent='Direct connection negotiation failed.'}
-  }
-  function disconnect(){
-    for(const x of outgoing.values())x.cancelled=true;
-    try{channel?.close()}catch{} try{pc?.close()}catch{}
-    channel=null;pc=null;remotePeer=null;remotePeerName='';outgoing.clear();incoming.clear();setPeerUI(false);setServerStatus(socket?.connected?'Server Connected':'Disconnected',!!socket?.connected);el.connectMessage.textContent='Disconnected.';
-  }
-  el.chatDisconnect.onclick=disconnect;
 
-  function sendControl(payload){if(!channel||channel.readyState!=='open')throw Error('Not connected');channel.send(JSON.stringify(payload))}
-  function addMessage(text,mine=false,kind='text'){
-    document.querySelector('.empty-chat')?.remove();
-    const row=document.createElement('div');row.className=`message ${mine?'mine':''}`;
-    const bubble=document.createElement('div');bubble.className='bubble';
-    if(kind==='gif'){const img=document.createElement('img');img.src=text;img.alt='GIF';img.loading='lazy';bubble.appendChild(img)}else bubble.appendChild(document.createTextNode(text));
-    const meta=document.createElement('small');meta.className='message-meta';meta.textContent=mine?'You':'Peer';bubble.appendChild(meta);row.appendChild(bubble);el.messages.appendChild(row);el.messages.scrollTop=el.messages.scrollHeight;
-  }
-  function saveChatMessage(peerId,key){ if(!peerId)return; const all=JSON.parse(localStorage.getItem(storage.chats)||'{}'); all[peerId]=all[peerId]||[]; all[peerId].push(key); all[peerId]=all[peerId].slice(-100); localStorage.setItem(storage.chats,JSON.stringify(all)); }
-  function loadChatHistory(id){ if(!el.messages)return; const all=JSON.parse(localStorage.getItem(storage.chats)||'{}'); const list=all[id]||[]; if(!list.length)return; document.querySelector('.empty-chat')?.remove(); list.forEach(m=>addMessage(m.text,m.mine,m.kind,false)); }
-  el.chatForm.onsubmit=e=>{e.preventDefault();const text=el.chatInput.value.trim();if(!text)return;try{sendControl({kind:'chat',text,at:Date.now()});addMessage(text,true,'text');saveChatMessage(remotePeer,{text,mine:true,kind:'text'});el.chatInput.value=''}catch{toast('Connect to a peer first')}};
-  el.attachBtn?.addEventListener('click',()=>el.chatFileInput.click());
-  el.cameraBtn?.addEventListener('click',()=>el.cameraInput.click());
-  el.chatFileInput?.addEventListener('change',()=>{[...el.chatFileInput.files].forEach(sendFile);el.chatFileInput.value=''});
-  el.cameraInput?.addEventListener('change',()=>{[...el.cameraInput.files].forEach(sendFile);el.cameraInput.value=''});
-  el.chatInput?.addEventListener('paste',e=>{const items=[...(e.clipboardData?.items||[])];const image=items.find(i=>i.kind==='file'&&i.type.startsWith('image/'));if(image){const file=image.getAsFile();if(file){e.preventDefault();sendFile(new File([file],`pasted-image-${Date.now()}.${(file.type.split('/')[1]||'png')}`,{type:file.type}))}}});
-  el.chatInput?.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();el.chatForm.requestSubmit()}});
+    function safeJSONParse(value, fallback = null) {
 
-  function formatBytes(n){if(!Number.isFinite(n))return '—';const u=['B','KB','MB','GB','TB'];let i=0,v=n;while(v>=1024&&i<u.length-1){v/=1024;i++}return `${v<10&&i?v.toFixed(1):Math.round(v)} ${u[i]}`}
-  function formatSpeed(bps){return `${formatBytes(bps)}/s`}
-  function formatEta(seconds){if(!Number.isFinite(seconds)||seconds<0||seconds>86400)return '—';if(seconds<60)return `${Math.ceil(seconds)}s`;const m=Math.floor(seconds/60),s=Math.ceil(seconds%60);return `${m}m ${s}s`}
-  function transferUI(name,direction,size){
-    const box=document.createElement('div');box.className='transfer';
-    box.innerHTML=`<div class="transfer-top"><div class="file-symbol">${direction==='out'?'↑':'↓'}</div><div class="file-info"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><span>${formatBytes(size)} • ${direction==='out'?'Sending':'Receiving'}</span></div><strong class="transfer-percent">0%</strong></div><div class="progress"><i></i></div><div class="transfer-bottom"><span class="transfer-status">Preparing…</span><span class="transfer-speed">—</span></div>`;
-    el.transfers.prepend(box);return {box,bar:box.querySelector('.progress i'),pct:box.querySelector('.transfer-percent'),status:box.querySelector('.transfer-status'),speed:box.querySelector('.transfer-speed')};
-  }
-  function escapeHtml(v){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+        try {
 
-  async function waitBuffered(){
-    if(!channel||channel.readyState!=='open')throw Error('Connection closed');
-    if(channel.bufferedAmount<=HIGH_WATER)return;
-    await new Promise(resolve=>{const done=()=>{channel.removeEventListener('bufferedamountlow',done);resolve()};channel.addEventListener('bufferedamountlow',done,{once:true})});
-  }
-  function waitAck(state,index){if(state.acked>=index)return Promise.resolve();return new Promise(resolve=>{state.waiting={index,resolve}})}
-  function handleAck(m){const s=outgoing.get(m.id);if(!s)return;s.acked=Math.max(s.acked,Number(m.index));if(s.waiting&&s.acked>=s.waiting.index){const r=s.waiting.resolve;s.waiting=null;r()}}
+            return JSON.parse(value);
 
-  async function sendFile(file){
-    if(!channel||channel.readyState!=='open')return toast('Connect a peer first.');
-    if(file.size===0)return toast('Empty files are not supported.');
-    const id=crypto.randomUUID(), total=Math.ceil(file.size/CHUNK), ui=transferUI(file.name,'out',file.size);
-    const state={file,acked:-1,waiting:null,cancelled:false,start:performance.now(),lastBytes:0,lastTime:performance.now()};outgoing.set(id,state);
-    try{
-      sendControl({kind:'file-start',id,name:file.name,size:file.size,type:file.type||'application/octet-stream',total,chunkSize:CHUNK,protocol:3});
-      for(let index=0,offset=0;index<total;index++,offset+=CHUNK){
-        if(state.cancelled)throw Error('Cancelled');
-        await waitBuffered();
-        const bytes=await file.slice(offset,Math.min(offset+CHUNK,file.size)).arrayBuffer();
-        sendControl({kind:'file-chunk',id,index});channel.send(bytes);
-        if(index%ACK_WINDOW===ACK_WINDOW-1||index===total-1)await waitAck(state,index);
-        const done=Math.min(offset+CHUNK,file.size),pct=Math.round(done/file.size*100);ui.bar.style.width=pct+'%';ui.pct.textContent=pct+'%';
-        const now=performance.now(),dt=(now-state.lastTime)/1000;if(dt>=.35){const bps=(done-state.lastBytes)/dt;ui.speed.textContent=formatSpeed(bps);ui.status.textContent=`Sending • ${formatEta((file.size-done)/Math.max(bps,1))} left`;el.speedStat.textContent=formatSpeed(bps);state.lastBytes=done;state.lastTime=now}
-      }
-      sendControl({kind:'file-end',id});ui.pct.textContent='100%';ui.status.textContent='Sent ✓';ui.speed.textContent='Complete';addHistory(file.name,file.size,'sent');toast(`${file.name} sent`);
-    }catch(e){ui.status.textContent=state.cancelled?'Cancelled':'Transfer stopped';ui.pct.textContent='—';toast(state.cancelled?'Transfer cancelled':'Large-file transfer stopped')}
-    finally{outgoing.delete(id)}
-  }
+        } catch {
 
-  const OPFS=!!navigator.storage?.getDirectory;
-  async function makeWriter(meta){
-    if(!OPFS)return null;
-    const root=await navigator.storage.getDirectory();
-    const safe=safeName(meta.name);const path=`alfashare-${crypto.randomUUID().slice(0,8)}-${safe}`;
-    const handle=await root.getFileHandle(path,{create:true});const writable=await handle.createWritable();
-    return {handle,writable,path};
-  }
-  function safeName(name){return (String(name||'file').replace(/[\\/:*?"<>|\x00-\x1F]/g,'_').trim()||'file').slice(0,160)}
-
-  async function handleChannelData(data){
-    if(typeof data==='string'){
-      let m;try{m=JSON.parse(data)}catch{return}
-      if(m.kind==='chat'){addMessage(m.text,false,'text');saveChatMessage(remotePeer,{text:m.text,mine:false,kind:'text'});}
-      else if(m.kind==='gif')addMessage(m.url,false,'gif');
-      else if(m.kind==='file-start'){
-        // Keep one active incoming file per peer. This makes framing deterministic and memory-safe.
-        if(incoming.size)sendControl({kind:'file-reject',id:m.id,reason:'Another file is currently receiving'});
-        else{
-          const ui=transferUI(m.name,'in',m.size);let writer=null;try{writer=await makeWriter(m)}catch(e){console.warn(e)}
-          incoming.set(m.id,{meta:m,ui,writer,parts:writer?null:[],received:0,expected:null,bytes:0,start:performance.now(),lastBytes:0,lastTime:performance.now()});
-          ui.status.textContent=writer?'Receiving to local storage…':'Receiving…';
+            return fallback;
         }
-      }else if(m.kind==='file-chunk'){
-        const item=incoming.get(m.id);if(item)item.expected=m.index;
-      }else if(m.kind==='file-end')await finishIncoming(m.id);
-      else if(m.kind==='file-ack')handleAck(m);
-      else if(m.kind==='file-reject')toast(m.reason||'Peer rejected the file');
-      return;
     }
-    const item=[...incoming.values()][0];if(!item||item.expected===null)return;
-    const index=item.expected;item.expected=null;
-    const bytes=data instanceof ArrayBuffer?new Uint8Array(data):new Uint8Array(await data.arrayBuffer());
-    if(item.writer)await item.writer.writable.write(bytes);else item.parts.push(bytes);
-    item.received++;item.bytes+=bytes.byteLength;
-    const pct=Math.round(item.received/item.meta.total*100);item.ui.bar.style.width=pct+'%';item.ui.pct.textContent=pct+'%';
-    const now=performance.now(),dt=(now-item.lastTime)/1000;if(dt>=.35){const bps=(item.bytes-item.lastBytes)/dt;item.ui.speed.textContent=formatSpeed(bps);item.ui.status.textContent=`Receiving • ${formatEta((item.meta.size-item.bytes)/Math.max(bps,1))} left`;el.speedStat.textContent=formatSpeed(bps);item.lastBytes=item.bytes;item.lastTime=now}
-    if(item.received%ACK_WINDOW===0||item.received===item.meta.total)sendControl({kind:'file-ack',id:item.meta.id,index});
-  }
-  async function finishIncoming(id){
-    const item=incoming.get(id);if(!item)return;
-    if(item.received!==item.meta.total){item.ui.status.textContent=`Incomplete ${item.received}/${item.meta.total}`;try{await item.writer?.writable.abort()}catch{};incoming.delete(id);return}
-    if(item.writer){
-      try{await item.writer.writable.close();item.ui.pct.textContent='100%';item.ui.status.textContent='Received ✓';item.ui.speed.textContent='Complete';addHistory(item.meta.name,item.meta.size,'received');addSaveButton(item);toast(`${item.meta.name} received`)}catch(e){console.error(e);item.ui.status.textContent='Could not save file'}
-    }else{
-      // Fallback only for browsers without OPFS. It is intentionally capped to protect mobile RAM.
-      const total=item.meta.size;if(total>64*1024*1024){item.ui.status.textContent='Browser storage unavailable for this large file';toast('Use a browser with local storage support for large files');incoming.delete(id);return}
-      const blob=new Blob(item.parts,{type:item.meta.type});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=item.meta.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);item.ui.pct.textContent='100%';item.ui.status.textContent='Received ✓';addHistory(item.meta.name,item.meta.size,'received');toast(`${item.meta.name} received`)
-    }
-    incoming.delete(id);
-  }
-  async function addSaveButton(item){
-    const b=document.createElement('button');b.className='save-button';b.textContent='Save to device';b.type='button';
-    b.onclick=async()=>{
-      try{
-        const file=await item.writer.handle.getFile();
-        if(window.showSaveFilePicker){const h=await window.showSaveFilePicker({suggestedName:item.meta.name});const out=await h.createWritable();const reader=file.stream().getReader();while(true){const r=await reader.read();if(r.done)break;await out.write(r.value)}await out.close();toast('Saved to device ✓')}
-        else{const url=URL.createObjectURL(file);const a=document.createElement('a');a.href=url;a.download=item.meta.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);toast('Download started')}
-      }catch(e){if(e?.name!=='AbortError')toast('Save cancelled')}
-    };item.ui.box.appendChild(b);
-  }
 
-  function addHistory(name,size,direction){
-    const list=JSON.parse(localStorage.getItem(storage.history)||'[]');list.unshift({name,size,direction,time:Date.now()});localStorage.setItem(storage.history,JSON.stringify(list.slice(0,40)));renderHistory();
-  }
-  function renderHistory(){
-    const list=JSON.parse(localStorage.getItem(storage.history)||'[]');el.history.innerHTML='';
-    if(!list.length){el.history.innerHTML='<div class="empty-history">No transfers yet.</div>';return}
-    list.forEach(x=>{const row=document.createElement('div');row.className='history-row';row.innerHTML=`<span class="history-icon">${x.direction==='sent'?'↑':'↓'}</span><div><strong title="${escapeHtml(x.name)}">${escapeHtml(x.name)}</strong><small>${x.direction==='sent'?'Sent':'Received'} • ${formatBytes(x.size)} • ${new Date(x.time).toLocaleString()}</small></div>`;el.history.appendChild(row)});
-  }
-  el.clearHistory.onclick=()=>{localStorage.removeItem(storage.history);renderHistory();toast('History cleared')};renderHistory();
-  el.chooseFiles.onclick=()=>el.fileInput.click();el.dropzone.addEventListener('click',e=>{if(!e.target.closest('button'))el.fileInput.click()});
-  el.fileInput.onchange=()=>{[...el.fileInput.files].forEach(sendFile);el.fileInput.value=''};
-  ['dragenter','dragover'].forEach(e=>el.dropzone.addEventListener(e,x=>{x.preventDefault();el.dropzone.classList.add('drag')}));
-  ['dragleave','drop'].forEach(e=>el.dropzone.addEventListener(e,x=>{x.preventDefault();el.dropzone.classList.remove('drag')}));
-  el.dropzone.addEventListener('drop',e=>[...e.dataTransfer.files].forEach(sendFile));
 
-  el.themes.querySelectorAll('button').forEach(b=>b.onclick=()=>{const t=b.dataset.theme;document.documentElement.dataset.theme=t;localStorage.setItem(storage.theme,t);el.themes.querySelectorAll('button').forEach(x=>x.classList.toggle('active',x===b))});
-  const theme=localStorage.getItem(storage.theme)||'dark';document.documentElement.dataset.theme=theme;el.themes.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.theme===theme));
+    function loadStorage(key, fallback = null) {
 
-  window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installStatus.textContent='Ready to install'});
-  window.addEventListener('appinstalled',()=>{deferredInstallPrompt=null;el.installStatus.textContent='Installed ✓';toast('AlfaShare installed')});
-  el.installBtn.onclick=async()=>{if(deferredInstallPrompt){deferredInstallPrompt.prompt();const r=await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installStatus.textContent=r.outcome==='accepted'?'Installed ✓':'Install cancelled'}else toast('Use browser menu → Install app')};
+        try {
 
-  function startSocket(){
-    setServerStatus('Connecting…');
-    socket=io({transports:['websocket','polling'],reconnection:true,reconnectionAttempts:Infinity,reconnectionDelay:1000,reconnectionDelayMax:5000,timeout:10000});
-    socket.on('connect',()=>{
-      el.serverText.textContent='Signaling connected';setServerStatus('Server Connected',true);
-      socket.emit('register',peerId,{name:profileName},result=>{
-        if(!result?.ok){
-          el.connectMessage.textContent=result?.error||'Could not register this peer.';
-          toast(result?.error||'Could not register this peer.');
-          return;
+            const value =
+                localStorage.getItem(key);
+
+            if (value === null) {
+                return fallback;
+            }
+
+            return value;
+
+        } catch {
+
+            return fallback;
         }
-        peerId=result.peerId||peerId;
-        localStorage.setItem(storage.peer,peerId);
-        setIdentity();
-        el.connectMessage.textContent='Ready — enter a peer code.';
-      });
-    });
-    socket.on('signal',onSignal);
-    socket.on('peer-offline',({peerId:id})=>{el.connectMessage.textContent='This peer is offline.';toast(`${id||'Peer'} is offline`)});
-    socket.on('disconnect',()=>{el.serverText.textContent='Signaling offline';if(!pc||pc.connectionState!=='connected')setServerStatus('Disconnected')});
-    socket.on('connect_error',()=>{el.serverText.textContent='Cannot reach signaling server';if(!pc||pc.connectionState!=='connected')setServerStatus('Disconnected')});
-  }
-  if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js',{updateViaCache:'none'}).then(r=>r.update()).catch(()=>{});
-  startSocket();
+    }
+
+
+    function saveStorage(key, value) {
+
+        try {
+
+            localStorage.setItem(
+                key,
+                value
+            );
+
+        } catch (error) {
+
+            console.warn(
+                "Storage error:",
+                error
+            );
+        }
+    }
+
+
+    function generatePeerId() {
+
+        const bytes =
+            new Uint8Array(6);
+
+        crypto.getRandomValues(bytes);
+
+        return Array.from(bytes)
+            .map(byte =>
+                byte
+                    .toString(36)
+                    .padStart(2, "0")
+            )
+            .join("")
+            .slice(0, 8)
+            .toUpperCase();
+    }
+
+
+    function getStablePeerId() {
+
+        let id =
+            loadStorage(
+                STORAGE_KEYS.peerId
+            );
+
+        if (
+            !id ||
+            typeof id !== "string"
+        ) {
+
+            id = generatePeerId();
+
+            saveStorage(
+                STORAGE_KEYS.peerId,
+                id
+            );
+        }
+
+        return id;
+    }
+
+
+    function getName() {
+
+        const saved =
+            loadStorage(
+                STORAGE_KEYS.name
+            );
+
+        return (
+            saved &&
+            saved.trim()
+        )
+            ? saved.trim()
+            : "AlfaShare User";
+    }
+
+
+    function formatBytes(bytes) {
+
+        if (!Number.isFinite(bytes)) {
+            return "0 B";
+        }
+
+        if (bytes < 1024) {
+            return `${bytes} B`;
+        }
+
+        if (bytes < 1024 * 1024) {
+            return `${(
+                bytes / 1024
+            ).toFixed(1)} KB`;
+        }
+
+        if (bytes < 1024 * 1024 * 1024) {
+            return `${(
+                bytes /
+                (1024 * 1024)
+            ).toFixed(1)} MB`;
+        }
+
+        return `${(
+            bytes /
+            (1024 * 1024 * 1024)
+        ).toFixed(2)} GB`;
+    }
+
+
+    function formatTime() {
+
+        return new Date()
+            .toLocaleTimeString(
+                [],
+                {
+                    hour: "2-digit",
+                    minute: "2-digit"
+                }
+            );
+    }
+
+
+    function setConnectionState(
+        state,
+        text
+    ) {
+
+        if (connectionStatus) {
+            connectionStatus.textContent =
+                text;
+        }
+
+        if (!connectionDot) {
+            return;
+        }
+
+        connectionDot.classList.remove(
+            "online",
+            "offline"
+        );
+
+        if (state === "online") {
+
+            connectionDot.classList.add(
+                "online"
+            );
+
+        } else if (
+            state === "offline"
+        ) {
+
+            connectionDot.classList.add(
+                "offline"
+            );
+        }
+    }
+
+
+    /* =====================================================
+       LOCAL PROFILE
+    ===================================================== */
+
+    function initializeProfile() {
+
+        myPeerId =
+            getStablePeerId();
+
+        myName =
+            getName();
+
+        if (myPeerCode) {
+
+            myPeerCode.textContent =
+                myPeerId;
+        }
+
+        if (nameInput) {
+
+            nameInput.value =
+                myName;
+        }
+
+        updateAvatar();
+    }
+
+
+    function updateAvatar() {
+
+        const firstLetter =
+            (
+                myName ||
+                "A"
+            )
+                .trim()
+                .charAt(0)
+                .toUpperCase();
+
+        if (profileAvatar) {
+
+            profileAvatar.textContent =
+                firstLetter;
+        }
+    }
+
+
+    if (nameInput) {
+
+        nameInput.addEventListener(
+            "input",
+            () => {
+
+                myName =
+                    nameInput.value
+                        .trim()
+                        .slice(0, 40);
+
+                if (!myName) {
+                    myName =
+                        "AlfaShare User";
+                }
+
+                saveStorage(
+                    STORAGE_KEYS.name,
+                    myName
+                );
+
+                updateAvatar();
+
+                /*
+                    If already connected,
+                    update remote profile
+                    without sending through
+                    the signaling server.
+                */
+
+                sendData({
+                    type: "profile",
+                    name: myName
+                });
+            }
+        );
+    }
+
+
+    /* =====================================================
+       THEME
+    ===================================================== */
+
+    function initializeTheme() {
+
+        const theme =
+            loadStorage(
+                STORAGE_KEYS.theme,
+                "dark"
+            );
+
+        applyTheme(theme);
+    }
+
+
+    function applyTheme(theme) {
+
+        document.body.classList.remove(
+            "theme-light",
+            "theme-blue",
+            "theme-green",
+            "theme-pink",
+            "theme-red",
+            "theme-neon"
+        );
+
+        if (
+            theme &&
+            theme !== "dark"
+        ) {
+
+            document.body.classList.add(
+                `theme-${theme}`
+            );
+        }
+
+        $$(".theme-option")
+            .forEach(button => {
+
+                button.classList.toggle(
+                    "active",
+                    button.dataset.theme ===
+                    theme
+                );
+            });
+
+        saveStorage(
+            STORAGE_KEYS.theme,
+            theme
+        );
+    }
+
+
+    $$(".theme-option")
+        .forEach(button => {
+
+            button.addEventListener(
+                "click",
+                () => {
+
+                    applyTheme(
+                        button.dataset.theme
+                    );
+                }
+            );
+        });
+
+
+    /* =====================================================
+       NAVIGATION
+    ===================================================== */
+
+    $$(".nav-item")
+        .forEach(button => {
+
+            button.addEventListener(
+                "click",
+                () => {
+
+                    const pageId =
+                        button.dataset.page;
+
+                    $$(".nav-item")
+                        .forEach(item => {
+
+                            item.classList.toggle(
+                                "active",
+                                item === button
+                            );
+                        });
+
+                    $$(".page")
+                        .forEach(page => {
+
+                            page.classList.toggle(
+                                "active",
+                                page.id === pageId
+                            );
+                        });
+                }
+            );
+        });
+
+
+    /* =====================================================
+       SOCKET CONNECTION
+    ===================================================== */
+
+    function connectSocket() {
+
+        if (typeof io !== "function") {
+
+            showToast(
+                "Socket.IO failed to load"
+            );
+
+            setConnectionState(
+                "offline",
+                "Server unavailable"
+            );
+
+            return;
+        }
+
+        setConnectionState(
+            "connecting",
+            "Connecting..."
+        );
+
+        socket = io({
+            transports: [
+                "websocket",
+                "polling"
+            ],
+
+            reconnection: true,
+
+            reconnectionAttempts: Infinity,
+
+            reconnectionDelay: 1000,
+
+            reconnectionDelayMax: 5000,
+
+            timeout: 10000
+        });
+
+
+        socket.on(
+            "connect",
+            () => {
+
+                console.log(
+                    "Signaling connected"
+                );
+
+                setConnectionState(
+                    "online",
+                    "Server connected"
+                );
+
+                registerPeer();
+            }
+        );
+
+
+        socket.on(
+            "disconnect",
+            () => {
+
+                setConnectionState(
+                    "offline",
+                    "Server disconnected"
+                );
+
+                /*
+                    Do not destroy the peer ID.
+
+                    The ID stays in localStorage,
+                    therefore refresh does NOT create
+                    a new code.
+                */
+
+                scheduleReconnect();
+            }
+        );
+
+
+        socket.on(
+            "connect_error",
+            error => {
+
+                console.warn(
+                    "Socket connection error:",
+                    error.message
+                );
+
+                setConnectionState(
+                    "offline",
+                    "Server unavailable"
+                );
+            }
+        );
+
+
+        socket.on(
+            "peer:registered",
+            data => {
+
+                if (
+                    data &&
+                    data.peerId
+                ) {
+
+                    myPeerId =
+                        data.peerId;
+
+                    if (myPeerCode) {
+
+                        myPeerCode.textContent =
+                            myPeerId;
+                    }
+                }
+            }
+        );
+
+
+        socket.on(
+            "peer:replaced",
+            () => {
+
+                showToast(
+                    "This AlfaShare session was opened somewhere else."
+                );
+            }
+        );
+
+
+        socket.on(
+            "peer:presence",
+            data => {
+
+                if (
+                    !data ||
+                    !remotePeerId
+                ) {
+                    return;
+                }
+
+                if (
+                    data.peerId ===
+                    remotePeerId
+                ) {
+
+                    updateRemotePresence(
+                        Boolean(data.online)
+                    );
+                }
+            }
+        );
+
+
+        socket.on(
+            "peer:lookupResult",
+            data => {
+
+                if (
+                    !data ||
+                    data.peerId !==
+                    remotePeerId
+                ) {
+                    return;
+                }
+
+                if (!data.online) {
+
+                    handlePeerOffline();
+
+                    return;
+                }
+
+                if (
+                    data.profile &&
+                    data.profile.name
+                ) {
+
+                    remotePeerName =
+                        data.profile.name;
+
+                    updatePeerUI();
+                }
+            }
+        );
+
+
+        socket.on(
+            "signal:offline",
+            data => {
+
+                if (
+                    data &&
+                    data.peerId ===
+                    remotePeerId
+                ) {
+
+                    handlePeerOffline();
+                }
+            }
+        );
+
+
+        socket.on(
+            "signal:offer",
+            async data => {
+
+                if (!data) return;
+
+                try {
+
+                    await handleOffer(
+                        data
+                    );
+
+                } catch (error) {
+
+                    console.error(
+                        "Offer error:",
+                        error
+                    );
+
+                    showToast(
+                        "Connection request failed"
+                    );
+                }
+            }
+        );
+
+
+        socket.on(
+            "signal:answer",
+            async data => {
+
+                if (!data) return;
+
+                try {
+
+                    await handleAnswer(
+                        data
+                    );
+
+                } catch (error) {
+
+                    console.error(
+                        "Answer error:",
+                        error
+                    );
+
+                    showToast(
+                        "Connection response failed"
+                    );
+                }
+            }
+        );
+
+
+        socket.on(
+            "signal:ice",
+            async data => {
+
+                if (!data) return;
+
+                try {
+
+                    await handleIce(
+                        data
+                    );
+
+                } catch (error) {
+
+                    console.warn(
+                        "ICE error:",
+                        error
+                    );
+                }
+            }
+        );
+    }
+
+
+    function registerPeer() {
+
+        if (
+            !socket ||
+            !socket.connected
+        ) {
+            return;
+        }
+
+        socket.emit(
+            "peer:register",
+            {
+                peerId: myPeerId,
+                name: myName
+            }
+        );
+    }
+
+
+    function scheduleReconnect() {
+
+        clearTimeout(
+            reconnectTimer
+        );
+
+        reconnectTimer =
+            setTimeout(() => {
+
+                if (
+                    socket &&
+                    !socket.connected
+                ) {
+
+                    socket.connect();
+                }
+
+            }, 2500);
+    }
+
+
+    /* =====================================================
+       CONNECT TO PEER
+    ===================================================== */
+
+    connectBtn.addEventListener(
+        "click",
+        connectToPeer
+    );
+
+
+    peerCodeInput.addEventListener(
+        "keydown",
+        event => {
+
+            if (
+                event.key ===
+                "Enter"
+            ) {
+
+                connectToPeer();
+            }
+        }
+    );
+
+
+    function connectToPeer() {
+
+        const target =
+            peerCodeInput.value
+                .trim()
+                .toUpperCase()
+                .replace(
+                    /[^A-Z0-9]/g,
+                    ""
+                );
+
+
+        if (!target) {
+
+            showToast(
+                "Enter a peer code"
+            );
+
+            peerCodeInput.focus();
+
+            return;
+        }
+
+
+        if (
+            target ===
+            myPeerId
+        ) {
+
+            showToast(
+                "You cannot connect to yourself"
+            );
+
+            return;
+        }
+
+
+        if (
+            !socket ||
+            !socket.connected
+        ) {
+
+            showToast(
+                "Signaling server is not connected"
+            );
+
+            return;
+        }
+
+
+        remotePeerId =
+            target;
+
+        remotePeerName =
+            "AlfaShare User";
+
+        isInitiator = true;
+
+        closePeerConnection();
+
+        setConnectionState(
+            "connecting",
+            "Connecting to peer..."
+        );
+
+        connectBtn.disabled =
+            true;
+
+        socket.emit(
+            "peer:lookup",
+            {
+                peerId:
+                    remotePeerId
+            }
+        );
+
+        /*
+            Give lookup a moment,
+            then start the WebRTC offer.
+        */
+
+        setTimeout(() => {
+
+            if (
+                remotePeerId &&
+                isInitiator &&
+                !dataChannel
+            ) {
+
+                createOffer();
+            }
+
+        }, 350);
+    }
+
+
+    /* =====================================================
+       WEBRTC
+    ===================================================== */
+
+    function createPeerConnection() {
+
+        closePeerConnection();
+
+        peerConnection =
+            new RTCPeerConnection({
+                iceServers:
+                    ICE_SERVERS,
+
+                bundlePolicy:
+                    "max-bundle",
+
+                rtcpMuxPolicy:
+                    "require"
+            });
+
+
+        peerConnection.onicecandidate =
+            event => {
+
+                if (
+                    event.candidate &&
+                    remotePeerId &&
+                    socket &&
+                    socket.connected
+                ) {
+
+                    socket.emit(
+                        "signal:ice",
+                        {
+                            to:
+                                remotePeerId,
+
+                            from:
+                                myPeerId,
+
+                            candidate:
+                                event.candidate
+                        }
+                    );
+                }
+            };
+
+
+        peerConnection.onconnectionstatechange =
+            () => {
+
+                const state =
+                    peerConnection
+                        .connectionState;
+
+                console.log(
+                    "Peer connection:",
+                    state
+                );
+
+
+                if (
+                    state ===
+                    "connected"
+                ) {
+
+                    onPeerConnected();
+
+                } else if (
+                    state ===
+                    "disconnected"
+                ) {
+
+                    setConnectionState(
+                        "connecting",
+                        "Connection interrupted..."
+                    );
+
+                    /*
+                        ICE may recover automatically.
+                    */
+
+                } else if (
+                    state ===
+                    "failed"
+                ) {
+
+                    showToast(
+                        "Connection lost. Trying again..."
+                    );
+
+                    attemptIceRestart();
+
+                } else if (
+                    state ===
+                    "closed"
+                ) {
+
+                    onPeerDisconnected();
+                }
+            };
+
+
+        peerConnection.ondatachannel =
+            event => {
+
+                setupDataChannel(
+                    event.channel
+                );
+            };
+
+
+        peerConnection.oniceconnectionstatechange =
+            () => {
+
+                const state =
+                    peerConnection
+                        .iceConnectionState;
+
+                console.log(
+                    "ICE:",
+                    state
+                );
+
+                if (
+                    state ===
+                    "failed"
+                ) {
+
+                    attemptIceRestart();
+                }
+            };
+
+        return peerConnection;
+    }
+
+
+    function setupDataChannel(channel) {
+
+        dataChannel =
+            channel;
+
+        dataChannel.binaryType =
+            "arraybuffer";
+
+        dataChannel.bufferedAmountLowThreshold =
+            BUFFERED_LOW_THRESHOLD;
+
+
+        dataChannel.onopen =
+            () => {
+
+                console.log(
+                    "DataChannel opened"
+                );
+
+                onPeerConnected();
+
+                sendData({
+                    type:
+                        "profile",
+
+                    name:
+                        myName
+                });
+            };
+
+
+        dataChannel.onclose =
+            () => {
+
+                console.log(
+                    "DataChannel closed"
+                );
+
+                dataChannel = null;
+
+                setConnectionState(
+                    "connecting",
+                    "Peer disconnected"
+                );
+
+                updateRemotePresence(
+                    false
+                );
+            };
+
+
+        dataChannel.onerror =
+            error => {
+
+                console.warn(
+                    "DataChannel error:",
+                    error
+                );
+            };
+
+
+        dataChannel.onmessage =
+            event => {
+
+                handleDataMessage(
+                    event.data
+                );
+            };
+    }
+
+
+    async function createOffer() {
+
+        if (
+            !remotePeerId
+        ) {
+            return;
+        }
+
+        try {
+
+            createPeerConnection();
+
+            isInitiator = true;
+
+            const channel =
+                peerConnection.createDataChannel(
+                    "alfashare",
+                    {
+                        ordered: true
+                    }
+                );
+
+            setupDataChannel(
+                channel
+            );
+
+
+            const offer =
+                await peerConnection
+                    .createOffer({
+                        offerToReceiveAudio:
+                            false,
+
+                        offerToReceiveVideo:
+                            false
+                    });
+
+
+            await peerConnection
+                .setLocalDescription(
+                    offer
+                );
+
+
+            socket.emit(
+                "signal:offer",
+                {
+                    to:
+                        remotePeerId,
+
+                    from:
+                        myPeerId,
+
+                    description:
+                        peerConnection
+                            .localDescription
+                }
+            );
+
+        } catch (error) {
+
+            console.error(
+                "Create offer failed:",
+                error
+            );
+
+            connectBtn.disabled =
+                false;
+
+            showToast(
+                "Could not start connection"
+            );
+        }
+    }
+
+
+    async function handleOffer(data) {
+
+        if (
+            !data.from
+        ) {
+            return;
+        }
+
+        remotePeerId =
+            data.from;
+
+        isInitiator = false;
+
+        createPeerConnection();
+
+        await peerConnection
+            .setRemoteDescription(
+                new RTCSessionDescription(
+                    data.description
+                )
+            );
+
+        await addPendingIceCandidates();
+
+        const answer =
+            await peerConnection
+                .createAnswer();
+
+        await peerConnection
+            .setLocalDescription(
+                answer
+            );
+
+        socket.emit(
+            "signal:answer",
+            {
+                to:
+                    remotePeerId,
+
+                from:
+                    myPeerId,
+
+                description:
+                    peerConnection
+                        .localDescription
+            }
+        );
+
+        setConnectionState(
+            "connecting",
+            "Accepting connection..."
+        );
+    }
+
+
+    async function handleAnswer(data) {
+
+        if (
+            !peerConnection
+        ) {
+            return;
+        }
+
+        if (
+            !data.description
+        ) {
+            return;
+        }
+
+        await peerConnection
+            .setRemoteDescription(
+                new RTCSessionDescription(
+                    data.description
+                )
+            );
+
+        await addPendingIceCandidates();
+    }
+
+
+    async function handleIce(data) {
+
+        if (
+            !data.candidate
+        ) {
+            return;
+        }
+
+
+        const candidate =
+            new RTCIceCandidate(
+                data.candidate
+            );
+
+
+        if (
+            peerConnection &&
+            peerConnection.remoteDescription
+        ) {
+
+            await peerConnection
+                .addIceCandidate(
+                    candidate
+                );
+
+        } else {
+
+            pendingCandidates.push(
+                candidate
+            );
+        }
+    }
+
+
+    async function addPendingIceCandidates() {
+
+        if (
+            !peerConnection
+        ) {
+            return;
+        }
+
+        while (
+            pendingCandidates.length
+        ) {
+
+            const candidate =
+                pendingCandidates.shift();
+
+            try {
+
+                await peerConnection
+                    .addIceCandidate(
+                        candidate
+                    );
+
+            } catch (error) {
+
+                console.warn(
+                    "Pending ICE error:",
+                    error
+                );
+            }
+        }
+    }
+
+
+    async function attemptIceRestart() {
+
+        if (
+            !peerConnection ||
+            !remotePeerId ||
+            !isInitiator ||
+            !socket ||
+            !socket.connected
+        ) {
+            return;
+        }
+
+        try {
+
+            const offer =
+                await peerConnection
+                    .createOffer({
+                        iceRestart: true
+                    });
+
+            await peerConnection
+                .setLocalDescription(
+                    offer
+                );
+
+            socket.emit(
+                "signal:offer",
+                {
+                    to:
+                        remotePeerId,
+
+                    from:
+                        myPeerId,
+
+                    description:
+                        peerConnection
+                            .localDescription,
+
+                    restart:
+                        true
+                }
+            );
+
+        } catch (error) {
+
+            console.warn(
+                "ICE restart failed:",
+                error
+            );
+        }
+    }
+
+
+    function closePeerConnection() {
+
+        pendingCandidates = [];
+
+        if (dataChannel) {
+
+            try {
+                dataChannel.close();
+            } catch {}
+        }
+
+        dataChannel = null;
+
+
+        if (peerConnection) {
+
+            try {
+                peerConnection.close();
+            } catch {}
+        }
+
+        peerConnection = null;
+    }
+
+
+    /* =====================================================
+       PEER UI
+    ===================================================== */
+
+    function onPeerConnected() {
+
+        if (!remotePeerId) {
+            return;
+        }
+
+        setConnectionState(
+            "online",
+            "Peer connected"
+        );
+
+        connectedPeer.hidden =
+            false;
+
+        connectedPeerName.textContent =
+            remotePeerName ||
+            "AlfaShare User";
+
+        connectedPeerStatus.textContent =
+            "Online • Direct P2P";
+
+        connectBtn.disabled =
+            false;
+
+        peerCodeInput.value =
+            remotePeerId;
+
+        updatePeerUI();
+
+        showToast(
+            `Connected to ${remotePeerName || "peer"}`
+        );
+
+        clearChatEmptyState();
+    }
+
+
+    function onPeerDisconnected() {
+
+        setConnectionState(
+            "offline",
+            "Peer offline"
+        );
+
+        updateRemotePresence(
+            false
+        );
+    }
+
+
+    function updatePeerUI() {
+
+        const name =
+            remotePeerName ||
+            "AlfaShare User";
+
+
+        if (connectedPeerName) {
+
+            connectedPeerName.textContent =
+                name;
+        }
+
+
+        if (chatPeerName) {
+
+            chatPeerName.textContent =
+                name;
+        }
+
+
+        if (chatPeerStatus) {
+
+            chatPeerStatus.textContent =
+                dataChannel &&
+                dataChannel.readyState ===
+                "open"
+
+                    ? "Online • Direct P2P"
+
+                    : "Offline";
+        }
+    }
+
+
+    function updateRemotePresence(
+        online
+    ) {
+
+        if (
+            !online &&
+            dataChannel &&
+            dataChannel.readyState ===
+            "open"
+        ) {
+
+            online = true;
+        }
+
+
+        if (connectedPeerStatus) {
+
+            connectedPeerStatus.textContent =
+                online
+                    ? "Online • Direct P2P"
+                    : "Offline";
+        }
+
+
+        if (chatPeerStatus) {
+
+            chatPeerStatus.textContent =
+                online
+                    ? "Online"
+                    : "Offline";
+        }
+    }
+
+
+    function handlePeerOffline() {
+
+        connectBtn.disabled =
+            false;
+
+        setConnectionState(
+            "offline",
+            "Peer offline"
+        );
+
+        showToast(
+            "That peer is currently offline"
+        );
+    }
+
+
+    disconnectBtn.addEventListener(
+        "click",
+        () => {
+
+            closePeerConnection();
+
+            remotePeerId = null;
+
+            remotePeerName = null;
+
+            connectedPeer.hidden =
+                true;
+
+            connectBtn.disabled =
+                false;
+
+            peerCodeInput.value =
+                "";
+
+            updatePeerUI();
+
+            setConnectionState(
+                "online",
+                "Server connected"
+            );
+
+            showToast(
+                "Peer disconnected"
+            );
+        }
+    );
+
+
+    /* =====================================================
+       DATA CHANNEL SEND
+    ===================================================== */
+
+    function canSendData() {
+
+        return (
+            dataChannel &&
+            dataChannel.readyState ===
+            "open"
+        );
+    }
+
+
+    function sendData(data) {
+
+        if (!canSendData()) {
+            return false;
+        }
+
+        try {
+
+            dataChannel.send(
+                JSON.stringify(data)
+            );
+
+            return true;
+
+        } catch (error) {
+
+            console.warn(
+                "Data send failed:",
+                error
+            );
+
+            return false;
+        }
+    }
+
+
+    /* =====================================================
+       CHAT
+    ===================================================== */
+
+    sendMessageBtn.addEventListener(
+        "click",
+        sendMessage
+    );
+
+
+    messageInput.addEventListener(
+        "keydown",
+        event => {
+
+            if (
+                event.key ===
+                "Enter" &&
+                !event.shiftKey
+            ) {
+
+                event.preventDefault();
+
+                sendMessage();
+            }
+        }
+    );
+
+
+    function sendMessage() {
+
+        const text =
+            messageInput.value
+                .trim();
+
+        if (!text) {
+            return;
+        }
+
+
+        if (!canSendData()) {
+
+            showToast(
+                "Connect to a peer first"
+            );
+
+            return;
+        }
+
+
+        const messageId =
+            `${Date.now()}-${Math.random()
+                .toString(36)
+                .slice(2, 8)}`;
+
+
+        const payload = {
+
+            type:
+                "chat",
+
+            id:
+                messageId,
+
+            text:
+                text,
+
+            time:
+                Date.now()
+        };
+
+
+        const sent =
+            sendData(payload);
+
+
+        if (!sent) {
+
+            showToast(
+                "Message could not be sent"
+            );
+
+            return;
+        }
+
+
+        addMessage(
+            text,
+            true,
+            "✓",
+            formatTime()
+        );
+
+
+        messageInput.value =
+            "";
+
+
+        /*
+            Delivery acknowledgement
+        */
+
+        setTimeout(() => {
+
+            markMessageDelivered(
+                messageId
+            );
+
+        }, 150);
+    }
+
+
+    function handleChatMessage(data) {
+
+        addMessage(
+            data.text,
+            false,
+            "✓✓",
+            new Date(
+                data.time || Date.now()
+            ).toLocaleTimeString(
+                [],
+                {
+                    hour:
+                        "2-digit",
+
+                    minute:
+                        "2-digit"
+                }
+            )
+        );
+
+
+        /*
+            Tell sender that message was
+            delivered/read.
+        */
+
+        sendData({
+            type:
+                "chat:delivered",
+
+            id:
+                data.id
+        });
+    }
+
+
+    function markMessageDelivered() {
+
+        const rows =
+            messages.querySelectorAll(
+                ".message-row.mine"
+            );
+
+        const last =
+            rows[rows.length - 1];
+
+        if (!last) return;
+
+        const ticks =
+            last.querySelector(
+                ".message-ticks"
+            );
+
+        if (ticks) {
+
+            ticks.textContent =
+                "✓✓";
+        }
+    }
+
+
+    function handleDelivery(data) {
+
+        if (!data.id) {
+            return;
+        }
+
+        markMessageDelivered(
+            data.id
+        );
+    }
+
+
+    function addMessage(
+        text,
+        mine,
+        ticks,
+        time
+    ) {
+
+        clearChatEmptyState();
+
+        const row =
+            document.createElement(
+                "div"
+            );
+
+        row.className =
+            `message-row ${
+                mine ? "mine" : ""
+            }`;
+
+
+        const bubble =
+            document.createElement(
+                "div"
+            );
+
+        bubble.className =
+            "message";
+
+
+        const body =
+            document.createElement(
+                "div"
+            );
+
+        body.textContent =
+            text;
+
+
+        const meta =
+            document.createElement(
+                "div"
+            );
+
+        meta.className =
+            "message-meta";
+
+
+        const timeElement =
+            document.createElement(
+                "span"
+            );
+
+        timeElement.textContent =
+            time;
+
+
+        meta.appendChild(
+            timeElement
+        );
+
+
+        if (mine) {
+
+            const tick =
+                document.createElement(
+                    "span"
+                );
+
+            tick.className =
+                "message-ticks";
+
+            tick.textContent =
+                ticks || "✓";
+
+            meta.appendChild(
+                tick
+            );
+        }
+
+
+        bubble.appendChild(
+            body
+        );
+
+        bubble.appendChild(
+            meta
+        );
+
+        row.appendChild(
+            bubble
+        );
+
+        messages.appendChild(
+            row
+        );
+
+
+        messages.scrollTop =
+            messages.scrollHeight;
+    }
+
+
+    function clearChatEmptyState() {
+
+        const empty =
+            messages.querySelector(
+                ".chat-empty"
+            );
+
+        if (empty) {
+
+            empty.remove();
+        }
+    }
+
+
+    /* =====================================================
+       EMOJI
+    ===================================================== */
+
+    emojiBtn.addEventListener(
+        "click",
+        () => {
+
+            emojiPanel.hidden =
+                !emojiPanel.hidden;
+        }
+    );
+
+
+    $$("#emojiPanel button")
+        .forEach(button => {
+
+            button.addEventListener(
+                "click",
+                () => {
+
+                    const emoji =
+                        button.textContent;
+
+                    insertAtCursor(
+                        messageInput,
+                        emoji
+                    );
+
+                    messageInput.focus();
+                }
+            );
+        });
+
+
+    function insertAtCursor(
+        input,
+        text
+    ) {
+
+        const start =
+            input.selectionStart;
+
+        const end =
+            input.selectionEnd;
+
+        const value =
+            input.value;
+
+        input.value =
+            value.slice(0, start) +
+            text +
+            value.slice(end);
+
+        const cursor =
+            start +
+            text.length;
+
+        input.setSelectionRange(
+            cursor,
+            cursor
+        );
+    }
+
+
+    /* =====================================================
+       FILE PICKER
+    ===================================================== */
+
+    chooseFileBtn.addEventListener(
+        "click",
+        () => {
+
+            if (!canSendData()) {
+
+                showToast(
+                    "Connect to a peer first"
+                );
+
+                return;
+            }
+
+            fileInput.click();
+        }
+    );
+
+
+    fileInput.addEventListener(
+        "change",
+        event => {
+
+            const file =
+                event.target.files?.[0];
+
+            if (file) {
+
+                sendFile(file);
+            }
+
+            fileInput.value =
+                "";
+        }
+    );
+
+
+    chatFileBtn.addEventListener(
+        "click",
+        () => {
+
+            if (!canSendData()) {
+
+                showToast(
+                    "Connect to a peer first"
+                );
+
+                return;
+            }
+
+            fileInput.click();
+        }
+    );
+
+
+    /* =====================================================
+       DRAG & DROP
+    ===================================================== */
+
+    [
+        "dragenter",
+        "dragover"
+    ]
+        .forEach(eventName => {
+
+            dropZone.addEventListener(
+                eventName,
+                event => {
+
+                    event.preventDefault();
+
+                    dropZone.classList.add(
+                        "dragging"
+                    );
+                }
+            );
+        });
+
+
+    [
+        "dragleave",
+        "drop"
+    ]
+        .forEach(eventName => {
+
+            dropZone.addEventListener(
+                eventName,
+                event => {
+
+                    event.preventDefault();
+
+                    dropZone.classList.remove(
+                        "dragging"
+                    );
+                }
+            );
+        });
+
+
+    dropZone.addEventListener(
+        "drop",
+        event => {
+
+            if (!canSendData()) {
+
+                showToast(
+                    "Connect to a peer first"
+                );
+
+                return;
+            }
+
+            const files =
+                Array.from(
+                    event.dataTransfer.files
+                );
+
+            if (files.length) {
+
+                sendFile(
+                    files[0]
+                );
+            }
+        }
+    );
+
+
+    /* =====================================================
+       OUTGOING FILE TRANSFER
+    ===================================================== */
+
+    async function sendFile(file) {
+
+        if (!canSendData()) {
+
+            showToast(
+                "Peer is not connected"
+            );
+
+            return;
+        }
+
+
+        const transferId =
+            `${Date.now()}-${++transferCounter}`;
+
+
+        const item =
+            createTransferUI(
+                transferId,
+                file.name,
+                file.size,
+                "upload"
+            );
+
+
+        outgoingTransfers.set(
+            transferId,
+            {
+                file,
+                item,
+                offset: 0,
+                startedAt: Date.now()
+            }
+        );
+
+
+        const metadata = {
+
+            type:
+                "file:start",
+
+            id:
+                transferId,
+
+            name:
+                file.name,
+
+            size:
+                file.size,
+
+            mime:
+                file.type ||
+                "application/octet-stream"
+        };
+
+
+        if (!sendData(metadata)) {
+
+            showToast(
+                "Could not start file transfer"
+            );
+
+            outgoingTransfers.delete(
+                transferId
+            );
+
+            return;
+        }
+
+
+        showToast(
+            `Sending ${file.name}`
+        );
+
+
+        await streamFile(
+            transferId
+        );
+    }
+
+
+    async function streamFile(
+        transferId
+    ) {
+
+        const transfer =
+            outgoingTransfers.get(
+                transferId
+            );
+
+        if (!transfer) {
+            return;
+        }
+
+
+        const {
+            file,
+            item
+        } = transfer;
+
+
+        let offset = 0;
+
+        const startedAt =
+            Date.now();
+
+
+        try {
+
+            while (
+                offset <
+                file.size
+            ) {
+
+                if (!canSendData()) {
+
+                    throw new Error(
+                        "Peer connection lost"
+                    );
+                }
+
+
+                /*
+                    Backpressure.
+
+                    We wait when the browser's
+                    outgoing DataChannel buffer
+                    becomes large.
+
+                    This prevents RAM explosion
+                    and keeps large files stable.
+                */
+
+                await waitForBuffer();
+
+
+                const end =
+                    Math.min(
+                        offset +
+                        CHUNK_SIZE,
+
+                        file.size
+                    );
+
+
+                const blob =
+                    file.slice(
+                        offset,
+                        end
+                    );
+
+
+                const buffer =
+                    await blob.arrayBuffer();
+
+
+                dataChannel.send(
+                    buffer
+                );
+
+
+                offset =
+                    end;
+
+
+                transfer.offset =
+                    offset;
+
+
+                updateTransferProgress(
+                    item,
+                    offset,
+                    file.size,
+                    startedAt
+                );
+
+
+                /*
+                    Give the browser a chance
+                    to process UI/events.
+                */
+
+                if (
+                    dataChannel.bufferedAmount >
+                    BUFFERED_LOW_THRESHOLD
+                ) {
+
+                    await waitForBuffer();
+                }
+            }
+
+
+            sendData({
+                type:
+                    "file:end",
+
+                id:
+                    transferId
+            });
+
+
+            updateTransferProgress(
+                item,
+                file.size,
+                file.size,
+                startedAt,
+                true
+            );
+
+
+            saveTransferHistory(
+                {
+                    direction:
+                        "sent",
+
+                    name:
+                        file.name,
+
+                    size:
+                        file.size,
+
+                    time:
+                        Date.now()
+                }
+            );
+
+
+            showToast(
+                "File sent successfully"
+            );
+
+
+        } catch (error) {
+
+            console.error(
+                "File send failed:",
+                error
+            );
+
+
+            updateTransferError(
+                item,
+                error.message
+            );
+
+
+            showToast(
+                "File transfer interrupted"
+            );
+        }
+
+
+        outgoingTransfers.delete(
+            transferId
+        );
+    }
+
+
+    function waitForBuffer() {
+
+        return new Promise(
+            resolve => {
+
+                if (
+                    !dataChannel ||
+                    dataChannel.bufferedAmount <=
+                    MAX_BUFFERED_AMOUNT
+                ) {
+
+                    resolve();
+
+                    return;
+                }
+
+
+                const handler =
+                    () => {
+
+                        dataChannel.removeEventListener(
+                            "bufferedamountlow",
+                            handler
+                        );
+
+                        resolve();
+                    };
+
+
+                dataChannel.addEventListener(
+                    "bufferedamountlow",
+                    handler
+                );
+
+
+                /*
+                    Safety fallback.
+                */
+
+                setTimeout(() => {
+
+                    dataChannel?.removeEventListener(
+                        "bufferedamountlow",
+                        handler
+                    );
+
+                    resolve();
+
+                }, 1000);
+            }
+        );
+    }
+
+
+    /* =====================================================
+       INCOMING FILE
+    ===================================================== */
+
+    function handleFileStart(data) {
+
+        const transfer = {
+
+            id:
+                data.id,
+
+            name:
+                data.name ||
+                "received-file",
+
+            size:
+                Number(data.size) || 0,
+
+            mime:
+                data.mime ||
+                "application/octet-stream",
+
+            chunks: [],
+
+            received:
+                0,
+
+            startedAt:
+                Date.now(),
+
+            item:
+                null
+        };
+
+
+        transfer.item =
+            createTransferUI(
+                transfer.id,
+                transfer.name,
+                transfer.size,
+                "download"
+            );
+
+
+        incomingTransfers.set(
+            transfer.id,
+            transfer
+        );
+
+
+        showToast(
+            `Receiving ${transfer.name}`
+        );
+    }
+
+
+    function handleFileChunk(
+        buffer
+    ) {
+
+        /*
+            DataChannel can deliver binary
+            data as ArrayBuffer or Blob.
+        */
+
+        if (
+            buffer instanceof Blob
+        ) {
+
+            buffer.arrayBuffer()
+                .then(
+                    handleBinaryBuffer
+                );
+
+        } else {
+
+            handleBinaryBuffer(
+                buffer
+            );
+        }
+    }
+
+
+    function handleBinaryBuffer(
+        buffer
+    ) {
+
+        if (
+            !(buffer instanceof ArrayBuffer)
+        ) {
+            return;
+        }
+
+
+        /*
+            There should normally be
+            exactly one active incoming file.
+
+            For this core version we map
+            binary chunks to the newest
+            incoming transfer.
+        */
+
+        const transfers =
+            Array.from(
+                incomingTransfers.values()
+            );
+
+
+        if (!transfers.length) {
+            return;
+        }
+
+
+        const transfer =
+            transfers[
+                transfers.length - 1
+            ];
+
+
+        transfer.chunks.push(
+            buffer
+        );
+
+
+        transfer.received +=
+            buffer.byteLength;
+
+
+        updateTransferProgress(
+            transfer.item,
+            transfer.received,
+            transfer.size,
+            transfer.startedAt
+        );
+    }
+
+
+    async function handleFileEnd(
+        data
+    ) {
+
+        const transfer =
+            incomingTransfers.get(
+                data.id
+            );
+
+
+        if (!transfer) {
+            return;
+        }
+
+
+        try {
+
+            const blob =
+                new Blob(
+                    transfer.chunks,
+                    {
+                        type:
+                            transfer.mime
+                    }
+                );
+
+
+            const url =
+                URL.createObjectURL(
+                    blob
+                );
+
+
+            const anchor =
+                document.createElement(
+                    "a"
+                );
+
+
+            anchor.href =
+                url;
+
+            anchor.download =
+                transfer.name;
+
+            anchor.style.display =
+                "none";
+
+
+            document.body.appendChild(
+                anchor
+            );
+
+
+            anchor.click();
+
+
+            anchor.remove();
+
+
+            setTimeout(() => {
+
+                URL.revokeObjectURL(
+                    url
+                );
+
+            }, 10000);
+
+
+            updateTransferProgress(
+                transfer.item,
+                transfer.size,
+                transfer.size,
+                transfer.startedAt,
+                true
+            );
+
+
+            saveTransferHistory(
+                {
+                    direction:
+                        "received",
+
+                    name:
+                        transfer.name,
+
+                    size:
+                        transfer.size,
+
+                    time:
+                        Date.now()
+                }
+            );
+
+
+            showToast(
+                `${transfer.name} received`
+            );
+
+
+        } catch (error) {
+
+            console.error(
+                "File assembly error:",
+                error
+            );
+
+
+            updateTransferError(
+                transfer.item,
+                "Could not assemble file"
+            );
+        }
+
+
+        incomingTransfers.delete(
+            data.id
+        );
+    }
+
+
+    /* =====================================================
+       DATA MESSAGE ROUTER
+    ===================================================== */
+
+    function handleDataMessage(
+        raw
+    ) {
+
+        if (
+            typeof raw ===
+            "string"
+        ) {
+
+            const data =
+                safeJSONParse(
+                    raw
+                );
+
+
+            if (!data) {
+                return;
+            }
+
+
+            switch (
+                data.type
+            ) {
+
+                case "profile":
+
+                    remotePeerName =
+                        data.name ||
+                        "AlfaShare User";
+
+                    updatePeerUI();
+
+                    break;
+
+
+                case "chat":
+
+                    handleChatMessage(
+                        data
+                    );
+
+                    break;
+
+
+                case "chat:delivered":
+
+                    handleDelivery(
+                        data
+                    );
+
+                    break;
+
+
+                case "file:start":
+
+                    handleFileStart(
+                        data
+                    );
+
+                    break;
+
+
+                case "file:end":
+
+                    handleFileEnd(
+                        data
+                    );
+
+                    break;
+
+
+                default:
+
+                    console.warn(
+                        "Unknown message:",
+                        data.type
+                    );
+            }
+
+            return;
+        }
+
+
+        /*
+            Binary chunk
+        */
+
+        handleFileChunk(
+            raw
+        );
+    }
+
+
+    /* =====================================================
+       TRANSFER UI
+    ===================================================== */
+
+    function createTransferUI(
+        id,
+        name,
+        size,
+        direction
+    ) {
+
+        const empty =
+            transferList.querySelector(
+                ".empty-state"
+            );
+
+        if (empty) {
+            empty.remove();
+        }
+
+
+        const item =
+            document.createElement(
+                "div"
+            );
+
+        item.className =
+            "transfer-item";
+
+        item.dataset.id =
+            id;
+
+
+        item.innerHTML = `
+            <div class="transfer-top">
+
+                <div class="file-icon">
+                    ${direction === "upload" ? "↑" : "↓"}
+                </div>
+
+                <div class="file-info">
+
+                    <strong></strong>
+
+                    <span>
+                        ${formatBytes(size)}
+                    </span>
+
+                </div>
+
+                <div class="transfer-percent">
+                    0%
+                </div>
+
+            </div>
+
+            <div class="progress-track">
+
+                <div class="progress-bar"></div>
+
+            </div>
+        `;
+
+
+        const nameElement =
+            item.querySelector(
+                ".file-info strong"
+            );
+
+
+        nameElement.textContent =
+            name;
+
+
+        transferList.prepend(
+            item
+        );
+
+
+        return item;
+    }
+
+
+    function updateTransferProgress(
+        item,
+        current,
+        total,
+        startedAt,
+        complete = false
+    ) {
+
+        if (!item) {
+            return;
+        }
+
+
+        const percent =
+            total > 0
+                ? Math.min(
+                    100,
+                    Math.round(
+                        current /
+                        total *
+                        100
+                    )
+                )
+                : 0;
+
+
+        const progress =
+            item.querySelector(
+                ".progress-bar"
+            );
+
+
+        const percentage =
+            item.querySelector(
+                ".transfer-percent"
+            );
+
+
+        if (progress) {
+
+            progress.style.width =
+                `${percent}%`;
+        }
+
+
+        if (percentage) {
+
+            percentage.textContent =
+                `${percent}%`;
+        }
+
+
+        if (complete) {
+
+            item.classList.add(
+                "complete"
+            );
+
+            if (percentage) {
+
+                percentage.textContent =
+                    "✓";
+            }
+        }
+    }
+
+
+    function updateTransferError(
+        item,
+        message
+    ) {
+
+        if (!item) {
+            return;
+        }
+
+
+        const percentage =
+            item.querySelector(
+                ".transfer-percent"
+            );
+
+
+        if (percentage) {
+
+            percentage.textContent =
+                "!";
+        }
+
+
+        const info =
+            item.querySelector(
+                ".file-info span"
+            );
+
+
+        if (info) {
+
+            info.textContent =
+                message ||
+                "Transfer failed";
+        }
+    }
+
+
+    clearTransfersBtn.addEventListener(
+        "click",
+        () => {
+
+            transferList.innerHTML = `
+                <div class="empty-state">
+
+                    <div>↑</div>
+
+                    <p>
+                        No active transfers
+                    </p>
+
+                </div>
+            `;
+        }
+    );
+
+
+    /* =====================================================
+       HISTORY
+    ===================================================== */
+
+    function saveTransferHistory(
+        record
+    ) {
+
+        const history =
+            safeJSONParse(
+                loadStorage(
+                    STORAGE_KEYS.history,
+                    "[]"
+                ),
+                []
+            );
+
+
+        history.unshift(
+            record
+        );
+
+
+        /*
+            Keep only recent local history.
+        */
+
+        history.splice(
+            100
+        );
+
+
+        saveStorage(
+            STORAGE_KEYS.history,
+            JSON.stringify(history)
+        );
+    }
+
+
+    /* =====================================================
+       COPY PEER CODE
+    ===================================================== */
+
+    copyPeerCodeBtn.addEventListener(
+        "click",
+        async () => {
+
+            try {
+
+                await navigator.clipboard
+                    .writeText(
+                        myPeerId
+                    );
+
+                showToast(
+                    "Peer code copied"
+                );
+
+            } catch {
+
+                showToast(
+                    "Copy failed"
+                );
+            }
+        }
+    );
+
+
+    /* =====================================================
+       PWA
+    ===================================================== */
+
+    function registerServiceWorker() {
+
+        if (
+            "serviceWorker" in
+            navigator
+        ) {
+
+            window.addEventListener(
+                "load",
+                () => {
+
+                    navigator.serviceWorker
+                        .register(
+                            "/sw.js"
+                        )
+                        .then(
+                            registration => {
+
+                                console.log(
+                                    "PWA service worker registered:",
+                                    registration.scope
+                                );
+                            }
+                        )
+                        .catch(
+                            error => {
+
+                                console.warn(
+                                    "Service worker:",
+                                    error
+                                );
+                            }
+                        );
+                }
+            );
+        }
+    }
+
+
+    /* =====================================================
+       PAGE VISIBILITY
+    ===================================================== */
+
+    document.addEventListener(
+        "visibilitychange",
+        () => {
+
+            if (
+                document.visibilityState ===
+                "visible"
+            ) {
+
+                /*
+                    If signaling dropped while
+                    the page was hidden, reconnect.
+                */
+
+                if (
+                    socket &&
+                    !socket.connected
+                ) {
+
+                    socket.connect();
+                }
+            }
+        }
+    );
+
+
+    /* =====================================================
+       NETWORK STATUS
+    ===================================================== */
+
+    window.addEventListener(
+        "online",
+        () => {
+
+            if (
+                socket &&
+                !socket.connected
+            ) {
+
+                socket.connect();
+            }
+
+            showToast(
+                "Internet connection restored"
+            );
+        }
+    );
+
+
+    window.addEventListener(
+        "offline",
+        () => {
+
+            setConnectionState(
+                "offline",
+                "Internet unavailable"
+            );
+
+            showToast(
+                "Internet connection lost"
+            );
+        }
+    );
+
+
+    /* =====================================================
+       INITIALIZE
+    ===================================================== */
+
+    function initialize() {
+
+        initializeProfile();
+
+        initializeTheme();
+
+        registerServiceWorker();
+
+        connectSocket();
+
+        console.log(
+            "AlfaShare initialized",
+            {
+                peerId:
+                    myPeerId
+            }
+        );
+    }
+
+
+    initialize();
+
 })();
