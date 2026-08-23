@@ -1,8 +1,8 @@
 {
   "name": "alfashare",
-  "version": "2.2.1",
+  "version": "3.0.0",
   "private": true,
-  "description": "AlfaShare - fast self-hosted P2P file sharing and real-time chat.",
+  "description": "AlfaShare - simple, fast, private P2P chat and large file sharing.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
