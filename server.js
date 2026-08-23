@@ -1,108 +1,314 @@
-const path = require("path");
-const crypto = require("crypto");
-const http = require("http");
 const express = require("express");
+const http = require("http");
 const { Server } = require("socket.io");
-
-const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || "0.0.0.0";
+const path = require("path");
 
 const app = express();
 const server = http.createServer(app);
+
 const io = new Server(server, {
-  cors: { origin: true, credentials: false },
-  maxHttpBufferSize: 2 * 1024 * 1024
+    transports: ["websocket", "polling"],
+    cors: {
+        origin: "*"
+    }
 });
 
-app.disable("x-powered-by");
-app.use(express.json({ limit: "64kb" }));
-app.use(express.static(path.join(__dirname, "public")));
+const PORT = process.env.PORT || 3000;
 
-app.get("/api/gifs", async (req, res) => {
-  const key = process.env.GIPHY_API_KEY;
-  const q = String(req.query.q || "").trim().slice(0, 80);
-  if (!key || !q) return res.json({ results: [] });
-  try {
-    const url = new URL("https://api.giphy.com/v1/gifs/search");
-    url.searchParams.set("api_key", key);
-    url.searchParams.set("q", q);
-    url.searchParams.set("limit", "12");
-    url.searchParams.set("rating", "pg-13");
-    const response = await fetch(url);
-    if (!response.ok) return res.json({ results: [] });
-    const data = await response.json();
-    const results = (data.data || []).map(g => ({
-      title: g.title || "GIF",
-      url: g.images?.original?.url || "",
-      preview: g.images?.fixed_width_small?.url || g.images?.downsized_small?.url || ""
-    })).filter(x => x.url && x.preview);
-    res.json({ results });
-  } catch {
-    res.json({ results: [] });
-  }
-});
+/*
+    AlfaShare Signaling Server
+
+    IMPORTANT:
+    This server DOES NOT receive or store:
+    - files
+    - chat messages
+    - file chunks
+
+    It only helps two peers find each other
+    and exchange WebRTC signaling information.
+*/
 
 const peers = new Map();
 
-function validPeerId(id) {
-  return /^[A-Z0-9]{8,32}$/.test(id);
-}
+/* Serve frontend */
+app.use(express.static(path.join(__dirname, "public")));
 
-io.on("connection", socket => {
-  socket.on("register", (rawId, profile, ack) => {
-    if (typeof profile === "function") { ack = profile; profile = {}; }
-    const peerId = String(rawId || "").trim().toUpperCase();
-    if (!validPeerId(peerId)) return ack?.({ ok: false, error: "Invalid peer ID." });
-    const previousSocketId = peers.get(peerId);
-    if (previousSocketId && previousSocketId !== socket.id) {
-      const previousSocket = io.sockets.sockets.get(previousSocketId);
-      if (previousSocket) {
-        previousSocket.emit('peer-replaced', { message: 'This peer was refreshed or reopened on another session.' });
-        previousSocket.disconnect(true);
-      }
-      peers.delete(peerId);
-    }
+/* -----------------------------
+   Socket.IO
+----------------------------- */
 
-    socket.data.peerId = peerId;
-    socket.data.name = String(profile?.name || "AlfaShare user").trim().slice(0, 40) || "AlfaShare user";
-    peers.set(peerId, socket.id);
-    ack?.({ ok: true, peerId, name: socket.data.name });
-    socket.emit("registered", { peerId });
-  });
+io.on("connection", (socket) => {
 
-  socket.on("check-peer", (rawId, ack) => {
-    const id = String(rawId || "").trim().toUpperCase();
-    const target = peers.get(id);
-    if (!target) return ack?.({ online: false, peerId: id });
-    const targetSocket = io.sockets.sockets.get(target);
-    ack?.({ online: !!targetSocket, peerId: id, name: targetSocket?.data?.name || "AlfaShare user" });
-  });
+    console.log("Socket connected:", socket.id);
 
-  socket.on("signal", ({ to, data }) => {
-    const from = socket.data.peerId;
-    const targetId = String(to || "").toUpperCase();
-    const target = peers.get(targetId);
-    if (!from || !target || !data) {
-      socket.emit("peer-offline", { peerId: targetId });
-      return;
-    }
-    io.to(target).emit("signal", { from, name: socket.data.name || "AlfaShare user", data });
-  });
+    /*
+        Register peer
+    */
+    socket.on("peer:register", (data) => {
 
-  socket.on("disconnect", () => {
-    const id = socket.data.peerId;
-    if (id && peers.get(id) === socket.id) peers.delete(id);
-  });
+        if (!data || !data.peerId) {
+            return;
+        }
+
+        const peerId = String(data.peerId);
+
+        const profile = {
+            name: String(data.name || "AlfaShare User").slice(0, 50)
+        };
+
+        /*
+            If the same device reconnects,
+            remove its old socket.
+        */
+
+        const oldPeer = peers.get(peerId);
+
+        if (oldPeer && oldPeer.socketId !== socket.id) {
+
+            const oldSocket = io.sockets.sockets.get(
+                oldPeer.socketId
+            );
+
+            if (oldSocket) {
+                oldSocket.emit("peer:replaced");
+                oldSocket.disconnect(true);
+            }
+        }
+
+        peers.set(peerId, {
+            socketId: socket.id,
+            profile: profile,
+            connectedAt: Date.now()
+        });
+
+        socket.data.peerId = peerId;
+
+        console.log("Peer registered:", peerId);
+
+        socket.emit("peer:registered", {
+            peerId
+        });
+
+        /*
+            Notify other connected clients
+            that this peer is online.
+        */
+
+        socket.broadcast.emit("peer:presence", {
+            peerId,
+            online: true,
+            profile
+        });
+    });
+
+
+    /*
+        Check whether another peer is online
+    */
+
+    socket.on("peer:lookup", (data) => {
+
+        if (!data || !data.peerId) {
+            return;
+        }
+
+        const peerId = String(data.peerId);
+
+        const peer = peers.get(peerId);
+
+        socket.emit("peer:lookupResult", {
+
+            peerId,
+
+            online: Boolean(peer),
+
+            profile: peer
+                ? peer.profile
+                : null
+        });
+    });
+
+
+    /*
+        WebRTC OFFER
+    */
+
+    socket.on("signal:offer", (data) => {
+
+        if (!data || !data.to) {
+            return;
+        }
+
+        const target = peers.get(String(data.to));
+
+        if (!target) {
+
+            socket.emit("signal:offline", {
+                peerId: data.to
+            });
+
+            return;
+        }
+
+        io.to(target.socketId).emit(
+            "signal:offer",
+            data
+        );
+    });
+
+
+    /*
+        WebRTC ANSWER
+    */
+
+    socket.on("signal:answer", (data) => {
+
+        if (!data || !data.to) {
+            return;
+        }
+
+        const target = peers.get(String(data.to));
+
+        if (!target) {
+
+            socket.emit("signal:offline", {
+                peerId: data.to
+            });
+
+            return;
+        }
+
+        io.to(target.socketId).emit(
+            "signal:answer",
+            data
+        );
+    });
+
+
+    /*
+        ICE candidate
+    */
+
+    socket.on("signal:ice", (data) => {
+
+        if (!data || !data.to) {
+            return;
+        }
+
+        const target = peers.get(String(data.to));
+
+        if (!target) {
+            return;
+        }
+
+        io.to(target.socketId).emit(
+            "signal:ice",
+            data
+        );
+    });
+
+
+    /*
+        Connection restart / ICE restart
+    */
+
+    socket.on("signal:restart", (data) => {
+
+        if (!data || !data.to) {
+            return;
+        }
+
+        const target = peers.get(String(data.to));
+
+        if (!target) {
+
+            socket.emit("signal:offline", {
+                peerId: data.to
+            });
+
+            return;
+        }
+
+        io.to(target.socketId).emit(
+            "signal:restart",
+            data
+        );
+    });
+
+
+    /*
+        Socket disconnected
+    */
+
+    socket.on("disconnect", () => {
+
+        const peerId = socket.data.peerId;
+
+        if (!peerId) {
+            return;
+        }
+
+        const peer = peers.get(peerId);
+
+        /*
+            Only remove this peer if this socket
+            is still the active connection.
+        */
+
+        if (
+            peer &&
+            peer.socketId === socket.id
+        ) {
+
+            peers.delete(peerId);
+
+            console.log(
+                "Peer disconnected:",
+                peerId
+            );
+
+            socket.broadcast.emit(
+                "peer:presence",
+                {
+                    peerId,
+                    online: false
+                }
+            );
+        }
+    });
 });
 
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok", peers: peers.size, service: "AlfaShare signaling" });
+
+/*
+    SPA fallback
+*/
+
+app.get("*", (req, res) => {
+
+    res.sendFile(
+        path.join(
+            __dirname,
+            "public",
+            "index.html"
+        )
+    );
 });
 
-app.get("*splat", (_req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
-});
 
-server.listen(PORT, HOST, () => {
-  console.log(`AlfaShare signaling server listening on http://${HOST}:${PORT}`);
+/*
+    Start server
+*/
+
+server.listen(PORT, () => {
+
+    console.log("");
+    console.log("=================================");
+    console.log("       AlfaShare Server");
+    console.log("=================================");
+    console.log(`Running on port ${PORT}`);
+    console.log("Signaling only");
+    console.log("No file storage");
+    console.log("No chat storage");
+    console.log("=================================");
+    console.log("");
 });
