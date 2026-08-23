@@ -1,58 +1,26 @@
 {
-  "name": "AlfaShare \u2014 Private P2P Network",
+  "name": "AlfaShare - P2P File Sharing",
   "short_name": "AlfaShare",
-  "description": "Professional direct peer-to-peer chat and file sharing PWA.",
+  "description": "Fast direct peer-to-peer file sharing and messaging.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#080c13",
-  "theme_color": "#0b0f17",
-  "orientation": "any",
+  "orientation": "portrait-primary",
+  "background_color": "#080b12",
+  "theme_color": "#7c3aed",
+  "prefer_related_applications": false,
   "icons": [
     {
-      "src": "/icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
       "purpose": "any maskable"
-    }
-  ],
-  "categories": [
-    "communication",
-    "utilities"
-  ],
-  "prefer_related_applications": false,
-  "shortcuts": [
-    {
-      "name": "Chat",
-      "short_name": "Chat",
-      "url": "/?tab=chat",
-      "icons": [
-        {
-          "src": "/icon.svg",
-          "sizes": "any"
-        }
-      ]
     },
     {
-      "name": "Share files",
-      "short_name": "Share",
-      "url": "/?tab=share",
-      "icons": [
-        {
-          "src": "/icon.svg",
-          "sizes": "any"
-        }
-      ]
-    },
-    {
-      "name": "Settings",
-      "short_name": "Settings",
-      "url": "/?tab=settings",
-      "icons": [
-        {
-          "src": "/icon.svg",
-          "sizes": "any"
-        }
-      ]
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
     }
   ]
 }
