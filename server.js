@@ -49,22 +49,36 @@ function validPeerId(id) {
 }
 
 io.on("connection", socket => {
-  socket.on("register", (rawId, ack) => {
+  socket.on("register", (rawId, profile, ack) => {
+    if (typeof profile === "function") { ack = profile; profile = {}; }
     const peerId = String(rawId || "").trim().toUpperCase();
     if (!validPeerId(peerId)) return ack?.({ ok: false, error: "Invalid peer ID." });
     if (peers.has(peerId)) return ack?.({ ok: false, error: "Peer ID already in use." });
 
     socket.data.peerId = peerId;
+    socket.data.name = String(profile?.name || "AlfaShare user").trim().slice(0, 40) || "AlfaShare user";
     peers.set(peerId, socket.id);
-    ack?.({ ok: true, peerId });
+    ack?.({ ok: true, peerId, name: socket.data.name });
     socket.emit("registered", { peerId });
+  });
+
+  socket.on("check-peer", (rawId, ack) => {
+    const id = String(rawId || "").trim().toUpperCase();
+    const target = peers.get(id);
+    if (!target) return ack?.({ online: false, peerId: id });
+    const targetSocket = io.sockets.sockets.get(target);
+    ack?.({ online: !!targetSocket, peerId: id, name: targetSocket?.data?.name || "AlfaShare user" });
   });
 
   socket.on("signal", ({ to, data }) => {
     const from = socket.data.peerId;
-    const target = peers.get(String(to || "").toUpperCase());
-    if (!from || !target || !data) return;
-    io.to(target).emit("signal", { from, data });
+    const targetId = String(to || "").toUpperCase();
+    const target = peers.get(targetId);
+    if (!from || !target || !data) {
+      socket.emit("peer-offline", { peerId: targetId });
+      return;
+    }
+    io.to(target).emit("signal", { from, name: socket.data.name || "AlfaShare user", data });
   });
 
   socket.on("disconnect", () => {
