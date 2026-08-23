@@ -43,6 +43,8 @@
     return [...bytes].map(n=>alphabet[n%alphabet.length]).join('');
   }
   function getPeerId(){
+    // Stable identity for this browser/origin. It changes only if site storage is cleared.
+
     const saved=(localStorage.getItem(storage.peer)||'').toUpperCase();
     if(/^[A-Z0-9]{8}$/.test(saved)) return saved;
     const id=makePeerId(); localStorage.setItem(storage.peer,id); return id;
@@ -114,15 +116,25 @@
     if(!socket?.connected){el.connectMessage.textContent='Signaling server is offline.';toast('AlfaShare server is offline');return false;}
     if(!/^[A-Z0-9]{8}$/.test(target)){el.connectMessage.textContent='Enter the 8-character peer code.';return false;}
     if(target===peerId){el.connectMessage.textContent='That is your own peer code.';return false;}
-    const status=await new Promise(resolve=>socket.emit('check-peer',target,result=>resolve(result||{online:false})));
-    if(!status.online){el.connectMessage.textContent='This peer is offline.';toast(`${status.name||'That peer'} is offline`);return false;}
+    const status=await new Promise(resolve=>{
+      let done=false;
+      const finish=result=>{if(done)return;done=true;clearTimeout(timer);resolve(result||{online:false});};
+      const timer=setTimeout(()=>finish({online:false,timeout:true}),7000);
+      try{socket.emit('check-peer',target,finish)}catch(error){finish({online:false,error:String(error?.message||error)})}
+    });
+    if(!status.online){
+      const message=status.timeout?'Peer lookup timed out. Please try again.':(status.error?'Could not check peer status. Please try again.':'This peer is offline.');
+      el.connectMessage.textContent=message;
+      toast(message);
+      return false;
+    }
     remotePeer=target; remotePeerName=status.name||target; saveContact(target,remotePeerName); setPeerUI(false); el.connectMessage.textContent=`Connecting to ${remotePeerName}…`;
     createPC(target,true);
     try{const offer=await pc.createOffer();await pc.setLocalDescription(offer);signal(target,{type:'offer',sdp:pc.localDescription})}
     catch(e){console.error(e);el.connectMessage.textContent='Could not start connection.';toast('Connection could not be started')}
     return true;
   }
-  el.connect.onclick=connectPeer;
+  el.connect.onclick=async()=>{ try{ await connectPeer(); }catch(error){ console.error(error); el.connectMessage.textContent='Connection error. Please try again.'; toast('Connection error — please try again'); } };
 
   async function onSignal({from,name,data}){
     remotePeer=from; remotePeerName=name||from; saveContact(from,remotePeerName);
@@ -290,13 +302,23 @@
     socket=io({transports:['websocket','polling'],reconnection:true,reconnectionAttempts:Infinity,reconnectionDelay:1000,reconnectionDelayMax:5000,timeout:10000});
     socket.on('connect',()=>{
       el.serverText.textContent='Signaling connected';setServerStatus('Server Connected',true);
-      socket.emit('register',peerId,{name:profileName},result=>{if(!result?.ok){peerId=makePeerId();localStorage.setItem(storage.peer,peerId);setIdentity();socket.emit('register',peerId,{name:profileName})}el.connectMessage.textContent='Ready — enter a peer code.'});
+      socket.emit('register',peerId,{name:profileName},result=>{
+        if(!result?.ok){
+          el.connectMessage.textContent=result?.error||'Could not register this peer.';
+          toast(result?.error||'Could not register this peer.');
+          return;
+        }
+        peerId=result.peerId||peerId;
+        localStorage.setItem(storage.peer,peerId);
+        setIdentity();
+        el.connectMessage.textContent='Ready — enter a peer code.';
+      });
     });
     socket.on('signal',onSignal);
     socket.on('peer-offline',({peerId:id})=>{el.connectMessage.textContent='This peer is offline.';toast(`${id||'Peer'} is offline`)});
     socket.on('disconnect',()=>{el.serverText.textContent='Signaling offline';if(!pc||pc.connectionState!=='connected')setServerStatus('Disconnected')});
     socket.on('connect_error',()=>{el.serverText.textContent='Cannot reach signaling server';if(!pc||pc.connectionState!=='connected')setServerStatus('Disconnected')});
   }
-  if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').then(r=>r.update()).catch(()=>{});
+  if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js',{updateViaCache:'none'}).then(r=>r.update()).catch(()=>{});
   startSocket();
 })();
