@@ -1,349 +1,287 @@
 (() => {
-"use strict";
+  "use strict";
 
-const CHUNK = 64 * 1024; // 4x larger than the previous build.
-const HIGH_WATER = 4 * 1024 * 1024;
-const LOW_WATER = 512 * 1024;
-const ICE = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun.cloudflare.com:3478" }
-];
-
-const $ = id => document.getElementById(id);
-const els = {
-  statusDot:$("statusDot"), statusText:$("statusText"), serverText:$("serverText"), mobileStatus:$("mobileStatus"),
-  sidePeerId:$("sidePeerId"), settingsPeerId:$("settingsPeerId"), copySideId:$("copySideId"), copySettingsId:$("copySettingsId"),
-  serverUrl:$("serverUrl"), remote:$("remotePeerId"), connect:$("connectBtn"), connectMessage:$("connectMessage"),
-  chatConnection:$("chatConnection"), chatPeerName:$("chatPeerName"), chatPeerSub:$("chatPeerSub"), chatDisconnect:$("chatDisconnect"), pastePeerBtn:$("pastePeerBtn"), quickConnectBtn:$("quickConnectBtn"), installBtn:$("installBtn"), installStatus:$("installStatus"),
-  peerAvatar:$("peerAvatar"), infoAvatar:$("infoAvatar"), infoPeer:$("infoPeer"), infoPeerAddress:$("infoPeerAddress"),
-  messages:$("messages"), chatForm:$("chatForm"), chatInput:$("chatInput"), send:$("sendBtn"),
-  emojiBtn:$("emojiBtn"), emojiPanel:$("emojiPanel"), gifBtn:$("gifBtn"), gifPanel:$("gifPanel"), gifUrl:$("gifUrl"), sendGif:$("sendGif"), gifResults:$("gifResults"),
-  dropzone:$("dropzone"), fileInput:$("fileInput"), chooseFiles:$("chooseFiles"), transfers:$("transfers"), history:$("history"), clearHistory:$("clearHistory"),
-  speedStat:$("speedStat"), toast:$("toast"), themes:$("themes"), nav:document.querySelectorAll(".nav-item"), tabs:document.querySelectorAll(".tab"),
-  openSettings:$("openSettings"), menuBtn:$("menuBtn"), closeMenuBtn:$("closeMenuBtn"), sidebar:document.querySelector(".sidebar")
-};
-
-let peerId = loadPeerId();
-let socket, pc, channel, remotePeer = null, pendingCandidates = [];
-let incoming = new Map(), outgoing = new Map(), lastSpeed = 0;
-
-function loadPeerId() {
-  const saved = localStorage.getItem("alfashare-peer-id");
-  if (saved && /^[A-Z0-9]{8,32}$/.test(saved)) return saved;
-  const id = [...crypto.getRandomValues(new Uint8Array(10))].map(x => x.toString(16).padStart(2,"0")).join("").toUpperCase();
-  localStorage.setItem("alfashare-peer-id", id);
-  return id;
-}
-
-function setIds() {
-  els.sidePeerId.textContent = peerId;
-  els.settingsPeerId.textContent = peerId;
-  els.serverUrl.textContent = location.origin;
-}
-setIds();
-
-function toast(text) {
-  els.toast.textContent = text; els.toast.classList.add("show");
-  clearTimeout(toast.t); toast.t = setTimeout(() => els.toast.classList.remove("show"), 2400);
-}
-function setStatus(text, on=false) {
-  els.statusText.textContent=text; els.statusDot.classList.toggle("on",on); els.mobileStatus.classList.toggle("on",on);
-}
-function setConnection(on) {
-  els.chatInput.disabled=!on; els.send.disabled=!on;
-  els.chatConnection.textContent=on ? `Connected • ${remotePeer}` : "Not connected";
-  els.chatPeerName.textContent=on ? remotePeer : "No peer connected";
-  els.chatPeerSub.textContent=on ? "Direct encrypted connection" : "Connect from Settings";
-  const letter=on ? remotePeer[0] : "?";
-  els.peerAvatar.textContent=letter; els.infoAvatar.textContent=letter;
-  els.infoPeer.textContent=on ? remotePeer : "Not connected"; els.infoPeerAddress.textContent=on ? remotePeer : "—";
-}
-function showTab(name) {
-  els.nav.forEach(b=>b.classList.toggle("active",b.dataset.tab===name));
-  els.tabs.forEach(t=>t.classList.toggle("active",t.id===`tab-${name}`));
-  els.sidebar.classList.remove("open");
-}
-els.nav.forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
-els.openSettings.onclick=()=>showTab("settings");
-els.menuBtn.onclick=()=>els.sidebar.classList.toggle("open");
-els.closeMenuBtn.onclick=()=>els.sidebar.classList.remove("open");
-document.addEventListener("keydown",e=>{if(e.key==="Escape")els.sidebar.classList.remove("open")});
-document.addEventListener("click",e=>{
-  if(window.innerWidth<=900 && els.sidebar.classList.contains("open") && !els.sidebar.contains(e.target) && e.target!==els.menuBtn){
-    els.sidebar.classList.remove("open");
-  }
-});
-
-async function copyId() { await navigator.clipboard.writeText(peerId); toast("AlfaShare address copied"); }
-els.copySideId.onclick=copyId; els.copySettingsId.onclick=copyId;
-
-function signal(to,data) { socket.emit("signal",{to,data}); }
-
-function makePC(id, initiator) {
-  if (pc) pc.close();
-  pendingCandidates=[];
-  pc=new RTCPeerConnection({iceServers:ICE});
-  pc.onicecandidate=e=>e.candidate && signal(id,{type:"candidate",candidate:e.candidate});
-  pc.onconnectionstatechange=()=>{
-    if(pc.connectionState==="connected") {
-      setStatus("P2P Connected",true); setConnection(true); toast("Direct connection established");
-    }
-    if(["failed","disconnected","closed"].includes(pc.connectionState)) disconnect(false);
+  /* AlfaShare 3.0
+     Direct WebRTC DataChannel. The signaling server only exchanges SDP/ICE.
+     File bytes never intentionally travel through Socket.IO.
+  */
+  const CHUNK = 64 * 1024;
+  const HIGH_WATER = 6 * 1024 * 1024;
+  const LOW_WATER = 768 * 1024;
+  const ACK_WINDOW = 32; // ~2 MB acknowledged at a time
+  const ICE = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun.cloudflare.com:3478" }
+  ];
+  const $ = id => document.getElementById(id);
+  const el = {
+    statusDot:$('statusDot'), statusText:$('statusText'), serverText:$('serverText'), mobileStatus:$('mobileStatus'),
+    sidePeerId:$('sidePeerId'), settingsPeerId:$('settingsPeerId'), copySideId:$('copySideId'), copySettingsId:$('copySettingsId'),
+    serverUrl:$('serverUrl'), remote:$('remotePeerId'), connect:$('connectBtn'), paste:$('pastePeerBtn'), connectMessage:$('connectMessage'),
+    chatConnection:$('chatConnection'), chatPeerName:$('chatPeerName'), chatPeerSub:$('chatPeerSub'), chatDisconnect:$('chatDisconnect'),
+    peerAvatar:$('peerAvatar'), infoAvatar:$('infoAvatar'), infoPeer:$('infoPeer'), infoPeerAddress:$('infoPeerAddress'),
+    messages:$('messages'), chatForm:$('chatForm'), chatInput:$('chatInput'), send:$('sendBtn'), emojiBtn:$('emojiBtn'), emojiPanel:$('emojiPanel'),
+    gifBtn:$('gifBtn'), gifPanel:$('gifPanel'), gifUrl:$('gifUrl'), sendGif:$('sendGif'), gifResults:$('gifResults'),
+    dropzone:$('dropzone'), fileInput:$('fileInput'), chooseFiles:$('chooseFiles'), transfers:$('transfers'), history:$('history'), clearHistory:$('clearHistory'), speedStat:$('speedStat'),
+    toast:$('toast'), themes:$('themes'), nav:document.querySelectorAll('.nav-item'), tabs:document.querySelectorAll('.tab'),
+    openSettings:$('openSettings'), openSettings2:$('openSettings2'), menuBtn:$('menuBtn'), closeMenuBtn:$('closeMenuBtn'), sidebar:$('sidebar'),
+    installBtn:$('installBtn'), installStatus:$('installStatus')
   };
-  pc.ondatachannel=e=>bindChannel(e.channel);
-  if(initiator) bindChannel(pc.createDataChannel("alfashare"));
-  return pc;
-}
-function bindChannel(dc) {
-  channel=dc; channel.binaryType="arraybuffer"; channel.bufferedAmountLowThreshold=LOW_WATER;
-  channel.onopen=()=>{setStatus("P2P Connected",true);setConnection(true);};
-  channel.onclose=()=>disconnect(false);
-  channel.onerror=()=>toast("Data channel error");
-  channel.onmessage=onChannel;
-}
-async function connectPeer() {
-  const target=els.remote.value.trim().toUpperCase();
-  if(!socket?.connected) return els.connectMessage.textContent="Signaling server is offline.";
-  if(!/^[A-Z0-9]{8,32}$/.test(target)) return els.connectMessage.textContent="Enter a valid 8–32 character AlfaShare address.";
-  if(target===peerId) return els.connectMessage.textContent="You cannot connect to your own address.";
-  remotePeer=target; els.connectMessage.textContent="Negotiating direct connection…";
-  makePC(target,true);
-  const offer=await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  signal(target,{type:"offer",sdp:pc.localDescription});
-}
-function normalizePeer(value){
-  return String(value||"").toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,32);
-}
-function openQuickConnect(){
-  const value=window.prompt("Enter the other person's AlfaShare address:", els.remote.value || "");
-  if(value===null)return;
-  els.remote.value=normalizePeer(value);
-  els.connectMessage.textContent=els.remote.value ? "Address entered. Press Connect." : "No address entered.";
-  if(els.remote.value) els.connect.focus();
-}
-els.connect.onclick=connectPeer;
-els.remote.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();connectPeer();}};
-els.remote.oninput=e=>{ e.target.value=normalizePeer(e.target.value); };
-els.remote.onpaste=()=>setTimeout(()=>{els.remote.value=normalizePeer(els.remote.value)},0);
-els.remote.onfocus=()=>{ els.connectMessage.textContent="Ready — type or paste a peer address."; };
-els.pastePeerBtn.onclick=async()=>{
-  try{
-    const text=await navigator.clipboard.readText();
-    els.remote.value=normalizePeer(text);
-    els.remote.focus();
-    els.connectMessage.textContent=els.remote.value?"Address pasted. Press Connect.":"Clipboard is empty.";
-  }catch{
-    openQuickConnect();
+
+  const storage = { history:'alfashare-history', peer:'alfashare-peer-id', theme:'alfashare-theme' };
+  let peerId = getPeerId();
+  let socket = null, pc = null, channel = null, remotePeer = null, pendingCandidates = [];
+  const outgoing = new Map();
+  const incoming = new Map();
+  let receiveQueue = Promise.resolve();
+  let deferredInstallPrompt = null;
+
+  function makePeerId(){
+    const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const bytes=crypto.getRandomValues(new Uint8Array(8));
+    return [...bytes].map(n=>alphabet[n%alphabet.length]).join('');
   }
-};
-els.quickConnectBtn.onclick=openQuickConnect;
+  function getPeerId(){
+    const saved=(localStorage.getItem(storage.peer)||'').toUpperCase();
+    if(/^[A-Z0-9]{8}$/.test(saved)) return saved;
+    const id=makePeerId(); localStorage.setItem(storage.peer,id); return id;
+  }
+  function setIdentity(){ el.sidePeerId.textContent=peerId; el.settingsPeerId.textContent=peerId; el.serverUrl.textContent=location.origin; }
+  setIdentity();
 
-async function onSignal({from,data}) {
-  remotePeer=from;
-  try {
-    if(data.type==="offer") {
-      makePC(from,false);
-      await pc.setRemoteDescription(data.sdp);
-      const answer=await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      signal(from,{type:"answer",sdp:pc.localDescription});
-    } else if(data.type==="answer") {
-      if(!pc) makePC(from,true);
-      await pc.setRemoteDescription(data.sdp);
-    } else if(data.type==="candidate") {
-      if(pc?.remoteDescription) await pc.addIceCandidate(data.candidate);
-      else pendingCandidates.push(data.candidate);
+  function toast(message){ el.toast.textContent=message; el.toast.classList.add('show'); clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.toast.classList.remove('show'),2600); }
+  function setServerStatus(text,on=false){
+    el.statusText.textContent=text; el.statusDot.classList.toggle('on',on); el.mobileStatus.classList.toggle('on',on);
+  }
+  function setPeerUI(connected){
+    el.chatInput.disabled=!connected; el.send.disabled=!connected;
+    el.chatConnection.textContent=connected?`Connected • ${remotePeer}`:'Not connected';
+    el.chatPeerName.textContent=connected?remotePeer:'No peer connected';
+    el.chatPeerSub.textContent=connected?'Direct encrypted connection':'Connect from Settings';
+    const letter=connected?remotePeer[0]:'?'; el.peerAvatar.textContent=letter; el.infoAvatar.textContent=letter;
+    el.infoPeer.textContent=connected?remotePeer:'Not connected'; el.infoPeerAddress.textContent=connected?remotePeer:'—';
+  }
+  function showTab(name){
+    el.nav.forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+    el.tabs.forEach(t=>t.classList.toggle('active',t.id===`tab-${name}`));
+    el.sidebar.classList.remove('open');
+  }
+  el.nav.forEach(b=>b.addEventListener('click',()=>showTab(b.dataset.tab)));
+  el.openSettings?.addEventListener('click',()=>showTab('settings'));
+  el.openSettings2?.addEventListener('click',()=>showTab('settings'));
+  el.menuBtn.addEventListener('click',()=>el.sidebar.classList.toggle('open'));
+  el.closeMenuBtn.addEventListener('click',()=>el.sidebar.classList.remove('open'));
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')el.sidebar.classList.remove('open')});
+  document.addEventListener('click',e=>{if(innerWidth<=900&&el.sidebar.classList.contains('open')&&!el.sidebar.contains(e.target)&&e.target!==el.menuBtn)el.sidebar.classList.remove('open')});
+
+  async function copyPeer(){try{await navigator.clipboard.writeText(peerId);toast('Peer code copied')}catch{toast(peerId)}}
+  el.copySideId.onclick=copyPeer; el.copySettingsId.onclick=copyPeer;
+
+  function signal(to,data){ if(socket?.connected) socket.emit('signal',{to,data}); }
+  function createPC(id,initiator){
+    try{pc?.close()}catch{}
+    pendingCandidates=[];
+    pc=new RTCPeerConnection({iceServers:ICE});
+    pc.onicecandidate=e=>{if(e.candidate)signal(id,{type:'candidate',candidate:e.candidate})};
+    pc.onconnectionstatechange=()=>{
+      if(pc?.connectionState==='connected'){setServerStatus('P2P Connected',true);setPeerUI(true);toast('Direct connection ready')}
+      if(['failed','disconnected','closed'].includes(pc?.connectionState)){setPeerUI(false);setServerStatus(socket?.connected?'Server Connected':'Disconnected',!!socket?.connected)}
+    };
+    pc.ondatachannel=e=>bindChannel(e.channel);
+    if(initiator)bindChannel(pc.createDataChannel('alfashare',{ordered:true}));
+  }
+  function bindChannel(dc){
+    channel=dc; channel.binaryType='arraybuffer'; channel.bufferedAmountLowThreshold=LOW_WATER;
+    channel.onopen=()=>{setServerStatus('P2P Connected',true);setPeerUI(true);toast('Direct connection ready')};
+    channel.onclose=()=>{setPeerUI(false);setServerStatus(socket?.connected?'Server Connected':'Disconnected',!!socket?.connected)};
+    channel.onerror=()=>toast('P2P data channel error');
+    channel.onmessage=e=>{receiveQueue=receiveQueue.then(()=>handleChannelData(e.data)).catch(err=>{console.error(err);toast('Transfer error — connection kept safe')})};
+  }
+  function normalizeCode(v){return String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,8)}
+  el.remote.oninput=e=>e.target.value=normalizeCode(e.target.value);
+  el.remote.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();connectPeer()}};
+  el.paste.onclick=async()=>{try{el.remote.value=normalizeCode(await navigator.clipboard.readText());el.remote.focus();}catch{el.remote.focus();toast('Paste permission unavailable — type the code')}};
+  async function connectPeer(){
+    const target=normalizeCode(el.remote.value); el.remote.value=target;
+    if(!socket?.connected)return el.connectMessage.textContent='Signaling server is offline.';
+    if(!/^[A-Z0-9]{8}$/.test(target))return el.connectMessage.textContent='Enter the 8-character peer code.';
+    if(target===peerId)return el.connectMessage.textContent='That is your own peer code.';
+    remotePeer=target; el.connectMessage.textContent='Connecting directly…';
+    createPC(target,true);
+    try{const offer=await pc.createOffer();await pc.setLocalDescription(offer);signal(target,{type:'offer',sdp:pc.localDescription})}
+    catch(e){console.error(e);el.connectMessage.textContent='Could not start connection.'}
+  }
+  el.connect.onclick=connectPeer;
+
+  async function onSignal({from,data}){
+    remotePeer=from;
+    try{
+      if(data.type==='offer'){
+        createPC(from,false); await pc.setRemoteDescription(data.sdp);
+        const answer=await pc.createAnswer(); await pc.setLocalDescription(answer); signal(from,{type:'answer',sdp:pc.localDescription});
+      }else if(data.type==='answer'&&pc){await pc.setRemoteDescription(data.sdp)}
+      else if(data.type==='candidate'){
+        if(pc?.remoteDescription)await pc.addIceCandidate(data.candidate); else pendingCandidates.push(data.candidate);
+      }
+      if(pc?.remoteDescription&&pendingCandidates.length){for(const c of pendingCandidates)await pc.addIceCandidate(c);pendingCandidates=[]}
+    }catch(e){console.error(e);el.connectMessage.textContent='Direct connection negotiation failed.'}
+  }
+  function disconnect(){
+    for(const x of outgoing.values())x.cancelled=true;
+    try{channel?.close()}catch{} try{pc?.close()}catch{}
+    channel=null;pc=null;remotePeer=null;outgoing.clear();incoming.clear();setPeerUI(false);setServerStatus(socket?.connected?'Server Connected':'Disconnected',!!socket?.connected);el.connectMessage.textContent='Disconnected.';
+  }
+  el.chatDisconnect.onclick=disconnect;
+
+  function sendControl(payload){if(!channel||channel.readyState!=='open')throw Error('Not connected');channel.send(JSON.stringify(payload))}
+  function addMessage(text,mine=false,kind='text'){
+    document.querySelector('.empty-chat')?.remove();
+    const row=document.createElement('div');row.className=`message ${mine?'mine':''}`;
+    const bubble=document.createElement('div');bubble.className='bubble';
+    if(kind==='gif'){const img=document.createElement('img');img.src=text;img.alt='GIF';img.loading='lazy';bubble.appendChild(img)}else bubble.appendChild(document.createTextNode(text));
+    const meta=document.createElement('small');meta.className='message-meta';meta.textContent=mine?'You':'Peer';bubble.appendChild(meta);row.appendChild(bubble);el.messages.appendChild(row);el.messages.scrollTop=el.messages.scrollHeight;
+  }
+  el.chatForm.onsubmit=e=>{e.preventDefault();const text=el.chatInput.value.trim();if(!text)return;try{sendControl({kind:'chat',text,at:Date.now()});addMessage(text,true);el.chatInput.value=''}catch{toast('Connect to a peer first')}};
+  const emojis='😀 😃 😄 😁 😆 😂 🙂 🙃 😉 😊 😍 🥰 😘 😎 🤩 🤔 😮 😢 😭 😡 🤯 ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 👍 👎 👏 🙌 🔥 ✨ 🎉 🎯 🚀 💯 👋 🙏 🤝 😴 🤗 🫶 😇 😈 🤩'.split(' ');
+  emojis.forEach(x=>{const b=document.createElement('button');b.type='button';b.textContent=x;b.onclick=()=>{el.chatInput.value+=x;el.chatInput.focus()};el.emojiPanel.appendChild(b)});
+  el.emojiBtn.onclick=()=>{el.emojiPanel.classList.toggle('hidden');el.gifPanel.classList.add('hidden')};
+  el.gifBtn.onclick=()=>{el.gifPanel.classList.toggle('hidden');el.emojiPanel.classList.add('hidden')};
+  el.sendGif.onclick=()=>{const url=el.gifUrl.value.trim();if(!/^https?:\/\//i.test(url))return toast('Paste a valid GIF URL');try{sendControl({kind:'gif',url});addMessage(url,true,'gif');el.gifUrl.value='';el.gifPanel.classList.add('hidden')}catch{toast('Connect to a peer first')}};
+
+  function formatBytes(n){if(!Number.isFinite(n))return '—';const u=['B','KB','MB','GB','TB'];let i=0,v=n;while(v>=1024&&i<u.length-1){v/=1024;i++}return `${v<10&&i?v.toFixed(1):Math.round(v)} ${u[i]}`}
+  function formatSpeed(bps){return `${formatBytes(bps)}/s`}
+  function formatEta(seconds){if(!Number.isFinite(seconds)||seconds<0||seconds>86400)return '—';if(seconds<60)return `${Math.ceil(seconds)}s`;const m=Math.floor(seconds/60),s=Math.ceil(seconds%60);return `${m}m ${s}s`}
+  function transferUI(name,direction,size){
+    const box=document.createElement('div');box.className='transfer';
+    box.innerHTML=`<div class="transfer-top"><div class="file-symbol">${direction==='out'?'↑':'↓'}</div><div class="file-info"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><span>${formatBytes(size)} • ${direction==='out'?'Sending':'Receiving'}</span></div><strong class="transfer-percent">0%</strong></div><div class="progress"><i></i></div><div class="transfer-bottom"><span class="transfer-status">Preparing…</span><span class="transfer-speed">—</span></div>`;
+    el.transfers.prepend(box);return {box,bar:box.querySelector('.progress i'),pct:box.querySelector('.transfer-percent'),status:box.querySelector('.transfer-status'),speed:box.querySelector('.transfer-speed')};
+  }
+  function escapeHtml(v){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+
+  async function waitBuffered(){
+    if(!channel||channel.readyState!=='open')throw Error('Connection closed');
+    if(channel.bufferedAmount<=HIGH_WATER)return;
+    await new Promise(resolve=>{const done=()=>{channel.removeEventListener('bufferedamountlow',done);resolve()};channel.addEventListener('bufferedamountlow',done,{once:true})});
+  }
+  function waitAck(state,index){if(state.acked>=index)return Promise.resolve();return new Promise(resolve=>{state.waiting={index,resolve}})}
+  function handleAck(m){const s=outgoing.get(m.id);if(!s)return;s.acked=Math.max(s.acked,Number(m.index));if(s.waiting&&s.acked>=s.waiting.index){const r=s.waiting.resolve;s.waiting=null;r()}}
+
+  async function sendFile(file){
+    if(!channel||channel.readyState!=='open')return toast('Connect a peer first.');
+    if(file.size===0)return toast('Empty files are not supported.');
+    const id=crypto.randomUUID(), total=Math.ceil(file.size/CHUNK), ui=transferUI(file.name,'out',file.size);
+    const state={file,acked:-1,waiting:null,cancelled:false,start:performance.now(),lastBytes:0,lastTime:performance.now()};outgoing.set(id,state);
+    try{
+      sendControl({kind:'file-start',id,name:file.name,size:file.size,type:file.type||'application/octet-stream',total,chunkSize:CHUNK,protocol:3});
+      for(let index=0,offset=0;index<total;index++,offset+=CHUNK){
+        if(state.cancelled)throw Error('Cancelled');
+        await waitBuffered();
+        const bytes=await file.slice(offset,Math.min(offset+CHUNK,file.size)).arrayBuffer();
+        sendControl({kind:'file-chunk',id,index});channel.send(bytes);
+        if(index%ACK_WINDOW===ACK_WINDOW-1||index===total-1)await waitAck(state,index);
+        const done=Math.min(offset+CHUNK,file.size),pct=Math.round(done/file.size*100);ui.bar.style.width=pct+'%';ui.pct.textContent=pct+'%';
+        const now=performance.now(),dt=(now-state.lastTime)/1000;if(dt>=.35){const bps=(done-state.lastBytes)/dt;ui.speed.textContent=formatSpeed(bps);ui.status.textContent=`Sending • ${formatEta((file.size-done)/Math.max(bps,1))} left`;el.speedStat.textContent=formatSpeed(bps);state.lastBytes=done;state.lastTime=now}
+      }
+      sendControl({kind:'file-end',id});ui.pct.textContent='100%';ui.status.textContent='Sent ✓';ui.speed.textContent='Complete';addHistory(file.name,file.size,'sent');toast(`${file.name} sent`);
+    }catch(e){ui.status.textContent=state.cancelled?'Cancelled':'Transfer stopped';ui.pct.textContent='—';toast(state.cancelled?'Transfer cancelled':'Large-file transfer stopped')}
+    finally{outgoing.delete(id)}
+  }
+
+  const OPFS=!!navigator.storage?.getDirectory;
+  async function makeWriter(meta){
+    if(!OPFS)return null;
+    const root=await navigator.storage.getDirectory();
+    const safe=safeName(meta.name);const path=`alfashare-${crypto.randomUUID().slice(0,8)}-${safe}`;
+    const handle=await root.getFileHandle(path,{create:true});const writable=await handle.createWritable();
+    return {handle,writable,path};
+  }
+  function safeName(name){return (String(name||'file').replace(/[\\/:*?"<>|\x00-\x1F]/g,'_').trim()||'file').slice(0,160)}
+
+  async function handleChannelData(data){
+    if(typeof data==='string'){
+      let m;try{m=JSON.parse(data)}catch{return}
+      if(m.kind==='chat')addMessage(m.text,false);
+      else if(m.kind==='gif')addMessage(m.url,false,'gif');
+      else if(m.kind==='file-start'){
+        // Keep one active incoming file per peer. This makes framing deterministic and memory-safe.
+        if(incoming.size)sendControl({kind:'file-reject',id:m.id,reason:'Another file is currently receiving'});
+        else{
+          const ui=transferUI(m.name,'in',m.size);let writer=null;try{writer=await makeWriter(m)}catch(e){console.warn(e)}
+          incoming.set(m.id,{meta:m,ui,writer,parts:writer?null:[],received:0,expected:null,bytes:0,start:performance.now(),lastBytes:0,lastTime:performance.now()});
+          ui.status.textContent=writer?'Receiving to local storage…':'Receiving…';
+        }
+      }else if(m.kind==='file-chunk'){
+        const item=incoming.get(m.id);if(item)item.expected=m.index;
+      }else if(m.kind==='file-end')await finishIncoming(m.id);
+      else if(m.kind==='file-ack')handleAck(m);
+      else if(m.kind==='file-reject')toast(m.reason||'Peer rejected the file');
+      return;
     }
-    if(pc?.remoteDescription && pendingCandidates.length) {
-      for(const c of pendingCandidates) await pc.addIceCandidate(c);
-      pendingCandidates=[];
+    const item=[...incoming.values()][0];if(!item||item.expected===null)return;
+    const index=item.expected;item.expected=null;
+    const bytes=data instanceof ArrayBuffer?new Uint8Array(data):new Uint8Array(await data.arrayBuffer());
+    if(item.writer)await item.writer.writable.write(bytes);else item.parts.push(bytes);
+    item.received++;item.bytes+=bytes.byteLength;
+    const pct=Math.round(item.received/item.meta.total*100);item.ui.bar.style.width=pct+'%';item.ui.pct.textContent=pct+'%';
+    const now=performance.now(),dt=(now-item.lastTime)/1000;if(dt>=.35){const bps=(item.bytes-item.lastBytes)/dt;item.ui.speed.textContent=formatSpeed(bps);item.ui.status.textContent=`Receiving • ${formatEta((item.meta.size-item.bytes)/Math.max(bps,1))} left`;el.speedStat.textContent=formatSpeed(bps);item.lastBytes=item.bytes;item.lastTime=now}
+    if(item.received%ACK_WINDOW===0||item.received===item.meta.total)sendControl({kind:'file-ack',id:item.meta.id,index});
+  }
+  async function finishIncoming(id){
+    const item=incoming.get(id);if(!item)return;
+    if(item.received!==item.meta.total){item.ui.status.textContent=`Incomplete ${item.received}/${item.meta.total}`;try{await item.writer?.writable.abort()}catch{};incoming.delete(id);return}
+    if(item.writer){
+      try{await item.writer.writable.close();item.ui.pct.textContent='100%';item.ui.status.textContent='Received ✓';item.ui.speed.textContent='Complete';addHistory(item.meta.name,item.meta.size,'received');addSaveButton(item);toast(`${item.meta.name} received`)}catch(e){console.error(e);item.ui.status.textContent='Could not save file'}
+    }else{
+      // Fallback only for browsers without OPFS. It is intentionally capped to protect mobile RAM.
+      const total=item.meta.size;if(total>64*1024*1024){item.ui.status.textContent='Browser storage unavailable for this large file';toast('Use a browser with local storage support for large files');incoming.delete(id);return}
+      const blob=new Blob(item.parts,{type:item.meta.type});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=item.meta.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);item.ui.pct.textContent='100%';item.ui.status.textContent='Received ✓';addHistory(item.meta.name,item.meta.size,'received');toast(`${item.meta.name} received`)
     }
-  } catch(e) { console.error(e); els.connectMessage.textContent="WebRTC negotiation failed."; disconnect(false); }
-}
+    incoming.delete(id);
+  }
+  async function addSaveButton(item){
+    const b=document.createElement('button');b.className='save-button';b.textContent='Save to device';b.type='button';
+    b.onclick=async()=>{
+      try{
+        const file=await item.writer.handle.getFile();
+        if(window.showSaveFilePicker){const h=await window.showSaveFilePicker({suggestedName:item.meta.name});const out=await h.createWritable();const reader=file.stream().getReader();while(true){const r=await reader.read();if(r.done)break;await out.write(r.value)}await out.close();toast('Saved to device ✓')}
+        else{const url=URL.createObjectURL(file);const a=document.createElement('a');a.href=url;a.download=item.meta.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);toast('Download started')}
+      }catch(e){if(e?.name!=='AbortError')toast('Save cancelled')}
+    };item.ui.box.appendChild(b);
+  }
 
-function disconnect(show=true) {
-  try{channel?.close()}catch{}
-  try{pc?.close()}catch{}
-  channel=null;pc=null;remotePeer=null;incoming.clear();outgoing.clear();setConnection(false);setStatus(socket?.connected?"Connected to server":"Disconnected",socket?.connected);
-  if(show) els.connectMessage.textContent="Disconnected.";
-}
+  function addHistory(name,size,direction){
+    const list=JSON.parse(localStorage.getItem(storage.history)||'[]');list.unshift({name,size,direction,time:Date.now()});localStorage.setItem(storage.history,JSON.stringify(list.slice(0,40)));renderHistory();
+  }
+  function renderHistory(){
+    const list=JSON.parse(localStorage.getItem(storage.history)||'[]');el.history.innerHTML='';
+    if(!list.length){el.history.innerHTML='<div class="empty-history">No transfers yet.</div>';return}
+    list.forEach(x=>{const row=document.createElement('div');row.className='history-row';row.innerHTML=`<span class="history-icon">${x.direction==='sent'?'↑':'↓'}</span><div><strong title="${escapeHtml(x.name)}">${escapeHtml(x.name)}</strong><small>${x.direction==='sent'?'Sent':'Received'} • ${formatBytes(x.size)} • ${new Date(x.time).toLocaleString()}</small></div>`;el.history.appendChild(row)});
+  }
+  el.clearHistory.onclick=()=>{localStorage.removeItem(storage.history);renderHistory();toast('History cleared')};renderHistory();
+  el.chooseFiles.onclick=()=>el.fileInput.click();el.dropzone.addEventListener('click',e=>{if(!e.target.closest('button'))el.fileInput.click()});
+  el.fileInput.onchange=()=>{[...el.fileInput.files].forEach(sendFile);el.fileInput.value=''};
+  ['dragenter','dragover'].forEach(e=>el.dropzone.addEventListener(e,x=>{x.preventDefault();el.dropzone.classList.add('drag')}));
+  ['dragleave','drop'].forEach(e=>el.dropzone.addEventListener(e,x=>{x.preventDefault();el.dropzone.classList.remove('drag')}));
+  el.dropzone.addEventListener('drop',e=>[...e.dataTransfer.files].forEach(sendFile));
 
-function send(payload) {
-  if(!channel || channel.readyState!=="open") throw Error("Not connected");
-  channel.send(JSON.stringify(payload));
-}
+  el.themes.querySelectorAll('button').forEach(b=>b.onclick=()=>{const t=b.dataset.theme;document.documentElement.dataset.theme=t;localStorage.setItem(storage.theme,t);el.themes.querySelectorAll('button').forEach(x=>x.classList.toggle('active',x===b))});
+  const theme=localStorage.getItem(storage.theme)||'dark';document.documentElement.dataset.theme=theme;el.themes.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.theme===theme));
 
-function resetWelcome() { document.querySelector(".welcome-chat")?.remove(); }
+  window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installStatus.textContent='Ready to install'});
+  window.addEventListener('appinstalled',()=>{deferredInstallPrompt=null;el.installStatus.textContent='Installed ✓';toast('AlfaShare installed')});
+  el.installBtn.onclick=async()=>{if(deferredInstallPrompt){deferredInstallPrompt.prompt();const r=await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installStatus.textContent=r.outcome==='accepted'?'Installed ✓':'Install cancelled'}else toast('Use browser menu → Install app')};
 
-function addMessage(text,mine=false,kind="text") {
-  resetWelcome();
-  const row=document.createElement("div"); row.className=`message ${mine?"mine":""}`;
-  const bubble=document.createElement("div"); bubble.className="bubble";
-  if(kind==="gif") { const img=document.createElement("img"); img.src=text; img.alt="GIF"; img.loading="lazy"; bubble.appendChild(img); }
-  else bubble.appendChild(document.createTextNode(text));
-  const meta=document.createElement("div"); meta.className="meta"; meta.textContent=mine?"You":(remotePeer||"Peer");
-  bubble.appendChild(meta);row.appendChild(bubble);els.messages.appendChild(row);els.messages.scrollTop=els.messages.scrollHeight;
-}
-
-els.chatForm.onsubmit=e=>{e.preventDefault();const text=els.chatInput.value.trim();if(!text)return;try{send({kind:"chat",text,at:Date.now()});addMessage(text,true);els.chatInput.value="";}catch{toast("Connect to a peer first");}};
-
-const emojis="😀 😃 😄 😁 😆 😅 😂 🙂 🙃 😉 😊 😍 🥰 😘 😎 🤩 🤔 😮 😢 😭 😡 🤯 ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 👍 👎 👏 🙌 🔥 ✨ 🎉 🎯 🚀 💯 👋 🙏 😂 🤝 😴 🤗".split(" ");
-emojis.forEach(e=>{const b=document.createElement("button");b.type="button";b.textContent=e;b.onclick=()=>els.chatInput.value+=e;els.emojiPanel.appendChild(b);});
-els.emojiBtn.onclick=()=>{els.emojiPanel.classList.toggle("hidden");els.gifPanel.classList.add("hidden")};
-els.gifBtn.onclick=()=>{els.gifPanel.classList.toggle("hidden");els.emojiPanel.classList.add("hidden")};
-els.sendGif.onclick=()=>{const url=els.gifUrl.value.trim();if(!/^https?:\/\/.+/i.test(url))return toast("Paste a valid GIF URL");try{send({kind:"gif",url});addMessage(url,true,"gif");els.gifUrl.value="";}catch{toast("Connect to a peer first")}};
-
-async function gifSearch(q) {
-  if(!q) return;
-  try {
-    const r=await fetch(`/api/gifs?q=${encodeURIComponent(q)}`);
-    const data=await r.json();
-    els.gifResults.innerHTML="";
-    (data.results||[]).forEach(item=>{
-      const img=document.createElement("img");img.src=item.preview;img.title=item.title||"GIF";
-      img.onclick=()=>{els.gifUrl.value=item.url;els.gifUrl.focus()};els.gifResults.appendChild(img);
+  function startSocket(){
+    setServerStatus('Connecting…');
+    socket=io({transports:['websocket','polling'],reconnection:true,reconnectionAttempts:Infinity,reconnectionDelay:1000,reconnectionDelayMax:5000,timeout:10000});
+    socket.on('connect',()=>{
+      el.serverText.textContent='Signaling connected';setServerStatus('Server Connected',true);
+      socket.emit('register',peerId,result=>{if(!result?.ok){peerId=makePeerId();localStorage.setItem(storage.peer,peerId);setIdentity();socket.emit('register',peerId)}el.connectMessage.textContent='Ready — enter a peer code.'});
     });
-  } catch {}
-}
-els.gifUrl.addEventListener("input",e=>{ if(!e.target.value.includes("http") && e.target.value.length>2) gifSearch(e.target.value); });
-
-function transferUI(name,direction) {
-  const box=document.createElement("div");box.className="transfer-item";
-  const line=document.createElement("div");line.className="transfer-line";
-  const b=document.createElement("b");b.textContent=`${direction==="in"?"Receiving":"Sending"} • ${name}`;
-  const pct=document.createElement("span");pct.textContent="0%";line.append(b,pct);
-  const bar=document.createElement("div");bar.className="bar";const i=document.createElement("i");bar.appendChild(i);box.append(line,bar);els.transfers.prepend(box);
-  return {box,pct,i};
-}
-function addHistory(name,size,direction) {
-  const history=JSON.parse(localStorage.getItem("alfashare-history")||"[]");
-  history.unshift({name,size,direction,time:new Date().toISOString()});
-  localStorage.setItem("alfashare-history",JSON.stringify(history.slice(0,100)));
-  renderHistory();
-}
-function fmtSize(n){if(n<1024)return `${n} B`;const u=["KB","MB","GB","TB"];let i=-1;do{n/=1024;i++}while(n>=1024&&i<u.length-1);return `${n.toFixed(n>=100?0:1)} ${u[i]}`}
-function renderHistory() {
-  const h=JSON.parse(localStorage.getItem("alfashare-history")||"[]");els.history.innerHTML="";
-  if(!h.length){els.history.innerHTML='<div class="empty-history">No transfer history yet.</div>';return;}
-  h.forEach(x=>{const d=document.createElement("div");d.className="history-item";d.innerHTML=`<div class="history-icon">${x.direction==="sent"?"⇧":"⇩"}</div><div><b></b><small></small></div>`;d.querySelector("b").textContent=x.name;d.querySelector("small").textContent=`${x.direction==="sent"?"Sent":"Received"} • ${fmtSize(x.size)} • ${new Date(x.time).toLocaleString()}`;els.history.appendChild(d)});
-}
-renderHistory();
-els.clearHistory.onclick=()=>{localStorage.removeItem("alfashare-history");renderHistory();toast("Transfer history cleared")};
-
-async function waitForBuffer() {
-  if(channel.bufferedAmount<=HIGH_WATER)return;
-  await new Promise(resolve=>{
-    const done=()=>{channel.removeEventListener("bufferedamountlow",done);resolve()};
-    channel.addEventListener("bufferedamountlow",done,{once:true});
-  });
-}
-async function sendFile(file) {
-  if(!channel||channel.readyState!=="open")return toast("Connect a peer first.");
-  const id=crypto.randomUUID(), total=Math.ceil(file.size/CHUNK), ui=transferUI(file.name,"out");
-  outgoing.set(id,{file,ui,total,start:performance.now()});
-  send({kind:"file-start",id,name:file.name,size:file.size,type:file.type||"application/octet-stream",total});
-  for(let index=0,offset=0;offset<file.size;index++,offset+=CHUNK) {
-    await waitForBuffer();
-    const buf=await file.slice(offset,offset+CHUNK).arrayBuffer();
-    // Robust protocol: metadata JSON first, then exactly one binary chunk.
-    send({kind:"file-chunk",id,index});
-    channel.send(buf);
-    const pct=Math.round(((index+1)/total)*100);ui.i.style.width=pct+"%";ui.pct.textContent=pct+"%";
-    const elapsed=(performance.now()-outgoing.get(id).start)/1000;
-    const mbps=elapsed?((Math.min(offset+CHUNK,file.size)/1024/1024)/elapsed):0;
-    els.speedStat.textContent=`${mbps.toFixed(1)} MB/s`;
+    socket.on('signal',onSignal);
+    socket.on('disconnect',()=>{el.serverText.textContent='Signaling offline';if(!pc||pc.connectionState!=='connected')setServerStatus('Disconnected')});
+    socket.on('connect_error',()=>{el.serverText.textContent='Cannot reach signaling server';if(!pc||pc.connectionState!=='connected')setServerStatus('Disconnected')});
   }
-  send({kind:"file-end",id});ui.pct.textContent="Sent";addHistory(file.name,file.size,"sent");outgoing.delete(id);
-}
-function onChannel(e) {
-  if(typeof e.data==="string") {
-    let m;try{m=JSON.parse(e.data)}catch{return}
-    if(m.kind==="chat")addMessage(m.text,false);
-    if(m.kind==="gif")addMessage(m.url,false,"gif");
-    if(m.kind==="file-start") {
-      const ui=transferUI(m.name,"in");
-      incoming.set(m.id,{meta:m,chunks:new Array(m.total),received:0,ui,expected:null});
-    }
-    if(m.kind==="file-chunk") {
-      const item=incoming.get(m.id);
-      if(item)item.expected=m.index;
-    }
-    if(m.kind==="file-end")finishFile(m.id);
-  } else {
-    // Binary message belongs to the chunk metadata immediately preceding it.
-    const item=[...incoming.values()].find(x=>x.expected!==null);
-    if(!item)return;
-    item.chunks[item.expected]=e.data;
-    item.received++;
-    item.expected=null;
-    const pct=Math.round((item.received/item.meta.total)*100);item.ui.i.style.width=pct+"%";item.ui.pct.textContent=pct+"%";
-  }
-}
-function finishFile(id) {
-  const item=incoming.get(id);if(!item)return;
-  if(item.received!==item.meta.total){item.ui.pct.textContent=`Incomplete (${item.received}/${item.meta.total})`;incoming.delete(id);return;}
-  const blob=new Blob(item.chunks,{type:item.meta.type});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=item.meta.name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
-  item.ui.pct.textContent="Received";addHistory(item.meta.name,item.meta.size,"received");toast(`Received ${item.meta.name}`);incoming.delete(id);
-}
-
-els.chooseFiles.onclick=()=>els.fileInput.click();
-els.dropzone.onclick=e=>{if(!e.target.closest("button"))els.fileInput.click()};
-els.fileInput.onchange=()=>[...els.fileInput.files].forEach(sendFile);
-["dragenter","dragover"].forEach(x=>els.dropzone.addEventListener(x,e=>{e.preventDefault();els.dropzone.classList.add("drag")}));
-["dragleave","drop"].forEach(x=>els.dropzone.addEventListener(x,e=>{e.preventDefault();els.dropzone.classList.remove("drag")}));
-els.dropzone.addEventListener("drop",e=>[...e.dataTransfer.files].forEach(sendFile));
-els.chatDisconnect.onclick=()=>disconnect();
-
-els.themes.querySelectorAll("button").forEach(b=>b.onclick=()=>{
-  document.documentElement.dataset.theme=b.dataset.theme;
-  localStorage.setItem("alfashare-theme",b.dataset.theme);
-  els.themes.querySelectorAll("button").forEach(x=>x.classList.toggle("active",x===b));
-});
-const savedTheme=localStorage.getItem("alfashare-theme")||"dark";document.documentElement.dataset.theme=savedTheme;
-els.themes.querySelectorAll("button").forEach(b=>b.classList.toggle("active",b.dataset.theme===savedTheme));
-
-
-let deferredInstallPrompt=null;
-window.addEventListener("beforeinstallprompt", e=>{
-  e.preventDefault(); deferredInstallPrompt=e;
-  els.installBtn.disabled=false; els.installStatus.textContent="Ready to install";
-});
-window.addEventListener("appinstalled", ()=>{
-  deferredInstallPrompt=null;
-  els.installBtn.disabled=true; els.installStatus.textContent="Installed ✓";
-  toast("AlfaShare installed");
-});
-els.installBtn.onclick=async()=>{
-  if(deferredInstallPrompt){
-    deferredInstallPrompt.prompt();
-    const choice=await deferredInstallPrompt.userChoice;
-    deferredInstallPrompt=null;
-    els.installStatus.textContent=choice.outcome==="accepted"?"Installed ✓":"Install cancelled";
-  }else{
-    els.installStatus.textContent="Use your browser menu → Install app / Add to Home screen";
-    toast("Open browser menu to install AlfaShare");
-  }
-};
-
-function startSocket() {
-  setStatus("Connecting…");
-  socket=io({transports:["websocket","polling"],reconnection:true});
-  socket.on("connect",()=>{
-    els.serverText.textContent="Signaling connected";setStatus("Server Connected",true);
-    socket.emit("register",peerId,result=>{
-      if(!result?.ok){localStorage.removeItem("alfashare-peer-id");peerId=loadPeerId();setIds();socket.emit("register",peerId)}
-      els.connectMessage.textContent="Ready. Enter a peer address.";
-    });
-  });
-  socket.on("disconnect",()=>{els.serverText.textContent="Signaling offline";if(!channel)setStatus("Disconnected")});
-  socket.on("connect_error",()=>{els.serverText.textContent="Cannot reach server";if(!channel)setStatus("Disconnected")});
-  socket.on("signal",onSignal);
-}
-if("serviceWorker"in navigator){
-  navigator.serviceWorker.register("/sw.js").then(reg=>{
-    reg.update();
-  }).catch(console.warn);
-}
-startSocket();
+  if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').then(r=>r.update()).catch(()=>{});
+  startSocket();
 })();
