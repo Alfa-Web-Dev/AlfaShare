@@ -1,18 +1,14 @@
 {
   "name": "alfashare",
-  "version": "4.1.0",
+  "version": "1.0.0",
+  "description": "Direct peer-to-peer file sharing and chat",
   "private": true,
-  "description": "AlfaShare - stable peer identity, robust signaling and high-speed direct P2P sharing.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node server.js"
   },
   "dependencies": {
-    "express": "^5.1.0",
+    "express": "^4.21.2",
     "socket.io": "^4.8.1"
-  },
-  "engines": {
-    "node": ">=18"
   }
 }
