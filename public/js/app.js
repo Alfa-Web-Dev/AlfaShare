@@ -11,7 +11,7 @@
 
     const CHUNK_SIZE = 64 * 1024;
 
-    const MAX_BUFFERED_AMOUNT = 4 * 1024 * 1024;
+    const MAX_BUFFERED_AMOUNT = 16 * 1024 * 1024;
 
     const BUFFERED_LOW_THRESHOLD = 512 * 1024;
 
