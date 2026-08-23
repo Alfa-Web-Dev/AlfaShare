@@ -1,28 +1,108 @@
-# AlfaShare 4.0
+const path = require("path");
+const crypto = require("crypto");
+const http = require("http");
+const express = require("express");
+const { Server } = require("socket.io");
 
-Fast, private, direct peer-to-peer chat and large-file sharing.
+const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || "0.0.0.0";
 
-## Highlights
-- Stable 8-character peer code stored in browser local storage.
-- Peer display name and recent peer contacts stored locally.
-- Offline-peer check before starting a WebRTC offer.
-- WebRTC DataChannel for chat and file bytes; Socket.IO is signaling only.
-- 64 KiB chunks with high-water backpressure and 8 MiB ACK windows.
-- OPFS-backed receiving on supported browsers to avoid assembling large files in RAM.
-- Transfer speed, progress and ETA.
-- Chat message history per peer.
-- Camera/file attachments and pasted images.
-- Responsive WhatsApp-inspired chat UI.
-- PWA with cache versioning and install support.
-- No database and no server-side file storage.
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: true, credentials: false },
+  maxHttpBufferSize: 2 * 1024 * 1024
+});
 
-## Run
-```bash
-npm install
-npm start
-```
+app.disable("x-powered-by");
+app.use(express.json({ limit: "64kb" }));
+app.use(express.static(path.join(__dirname, "public")));
 
-The signaling server uses `PORT` supplied by the hosting provider. Files are not sent through Socket.IO.
+app.get("/api/gifs", async (req, res) => {
+  const key = process.env.GIPHY_API_KEY;
+  const q = String(req.query.q || "").trim().slice(0, 80);
+  if (!key || !q) return res.json({ results: [] });
+  try {
+    const url = new URL("https://api.giphy.com/v1/gifs/search");
+    url.searchParams.set("api_key", key);
+    url.searchParams.set("q", q);
+    url.searchParams.set("limit", "12");
+    url.searchParams.set("rating", "pg-13");
+    const response = await fetch(url);
+    if (!response.ok) return res.json({ results: [] });
+    const data = await response.json();
+    const results = (data.data || []).map(g => ({
+      title: g.title || "GIF",
+      url: g.images?.original?.url || "",
+      preview: g.images?.fixed_width_small?.url || g.images?.downsized_small?.url || ""
+    })).filter(x => x.url && x.preview);
+    res.json({ results });
+  } catch {
+    res.json({ results: [] });
+  }
+});
 
-## Notes
-Direct P2P is subject to NAT/firewall conditions. STUN is configured; some restrictive networks require a TURN relay for connectivity.
+const peers = new Map();
+
+function validPeerId(id) {
+  return /^[A-Z0-9]{8,32}$/.test(id);
+}
+
+io.on("connection", socket => {
+  socket.on("register", (rawId, profile, ack) => {
+    if (typeof profile === "function") { ack = profile; profile = {}; }
+    const peerId = String(rawId || "").trim().toUpperCase();
+    if (!validPeerId(peerId)) return ack?.({ ok: false, error: "Invalid peer ID." });
+    const previousSocketId = peers.get(peerId);
+    if (previousSocketId && previousSocketId !== socket.id) {
+      const previousSocket = io.sockets.sockets.get(previousSocketId);
+      if (previousSocket) {
+        previousSocket.emit('peer-replaced', { message: 'This peer was refreshed or reopened on another session.' });
+        previousSocket.disconnect(true);
+      }
+      peers.delete(peerId);
+    }
+
+    socket.data.peerId = peerId;
+    socket.data.name = String(profile?.name || "AlfaShare user").trim().slice(0, 40) || "AlfaShare user";
+    peers.set(peerId, socket.id);
+    ack?.({ ok: true, peerId, name: socket.data.name });
+    socket.emit("registered", { peerId });
+  });
+
+  socket.on("check-peer", (rawId, ack) => {
+    const id = String(rawId || "").trim().toUpperCase();
+    const target = peers.get(id);
+    if (!target) return ack?.({ online: false, peerId: id });
+    const targetSocket = io.sockets.sockets.get(target);
+    ack?.({ online: !!targetSocket, peerId: id, name: targetSocket?.data?.name || "AlfaShare user" });
+  });
+
+  socket.on("signal", ({ to, data }) => {
+    const from = socket.data.peerId;
+    const targetId = String(to || "").toUpperCase();
+    const target = peers.get(targetId);
+    if (!from || !target || !data) {
+      socket.emit("peer-offline", { peerId: targetId });
+      return;
+    }
+    io.to(target).emit("signal", { from, name: socket.data.name || "AlfaShare user", data });
+  });
+
+  socket.on("disconnect", () => {
+    const id = socket.data.peerId;
+    if (id && peers.get(id) === socket.id) peers.delete(id);
+  });
+});
+
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", peers: peers.size, service: "AlfaShare signaling" });
+});
+
+app.get("*splat", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+server.listen(PORT, HOST, () => {
+  console.log(`AlfaShare signaling server listening on http://${HOST}:${PORT}`);
+});
