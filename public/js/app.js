@@ -5,10 +5,10 @@
      Direct WebRTC DataChannel. The signaling server only exchanges SDP/ICE.
      File bytes never intentionally travel through Socket.IO.
   */
-  const CHUNK = 64 * 1024;
-  const HIGH_WATER = 6 * 1024 * 1024;
-  const LOW_WATER = 768 * 1024;
-  const ACK_WINDOW = 32; // ~2 MB acknowledged at a time
+  const CHUNK = 128 * 1024;
+  const HIGH_WATER = 24 * 1024 * 1024;
+  const LOW_WATER = 6 * 1024 * 1024;
+  const ACK_WINDOW = 128; // ~16 MB acknowledged at a time
   const ICE = [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun.cloudflare.com:3478" }
@@ -21,16 +21,17 @@
     chatConnection:$('chatConnection'), chatPeerName:$('chatPeerName'), chatPeerSub:$('chatPeerSub'), chatDisconnect:$('chatDisconnect'),
     peerAvatar:$('peerAvatar'), infoAvatar:$('infoAvatar'), infoPeer:$('infoPeer'), infoPeerAddress:$('infoPeerAddress'),
     messages:$('messages'), chatForm:$('chatForm'), chatInput:$('chatInput'), send:$('sendBtn'), emojiBtn:$('emojiBtn'), emojiPanel:$('emojiPanel'),
-    gifBtn:$('gifBtn'), gifPanel:$('gifPanel'), gifUrl:$('gifUrl'), sendGif:$('sendGif'), gifResults:$('gifResults'),
+    attachBtn:$('attachBtn'), cameraBtn:$('cameraBtn'), chatFileInput:$('chatFileInput'), cameraInput:$('cameraInput'), gifPanel:$('gifPanel'), gifUrl:$('gifUrl'), sendGif:$('sendGif'), gifResults:$('gifResults'),
     dropzone:$('dropzone'), fileInput:$('fileInput'), chooseFiles:$('chooseFiles'), transfers:$('transfers'), history:$('history'), clearHistory:$('clearHistory'), speedStat:$('speedStat'),
     toast:$('toast'), themes:$('themes'), nav:document.querySelectorAll('.nav-item'), tabs:document.querySelectorAll('.tab'),
     openSettings:$('openSettings'), openSettings2:$('openSettings2'), menuBtn:$('menuBtn'), closeMenuBtn:$('closeMenuBtn'), sidebar:$('sidebar'),
-    installBtn:$('installBtn'), installStatus:$('installStatus')
+    installBtn:$('installBtn'), installStatus:$('installStatus'), profileName:$('profileName'), saveProfile:$('saveProfile'), profileStatus:$('profileStatus'), contacts:$('contacts'), clearContacts:$('clearContacts')
   };
 
-  const storage = { history:'alfashare-history', peer:'alfashare-peer-id', theme:'alfashare-theme' };
+  const storage = { history:'alfashare-history', peer:'alfashare-peer-id', theme:'alfashare-theme', name:'alfashare-profile-name', contacts:'alfashare-contacts', chats:'alfashare-chats' };
   let peerId = getPeerId();
-  let socket = null, pc = null, channel = null, remotePeer = null, pendingCandidates = [];
+  let profileName = (localStorage.getItem(storage.name)||'').trim().slice(0,40) || 'AlfaShare user';
+  let socket = null, pc = null, channel = null, remotePeer = null, remotePeerName = '', pendingCandidates = [];
   const outgoing = new Map();
   const incoming = new Map();
   let receiveQueue = Promise.resolve();
@@ -46,7 +47,7 @@
     if(/^[A-Z0-9]{8}$/.test(saved)) return saved;
     const id=makePeerId(); localStorage.setItem(storage.peer,id); return id;
   }
-  function setIdentity(){ el.sidePeerId.textContent=peerId; el.settingsPeerId.textContent=peerId; el.serverUrl.textContent=location.origin; }
+  function setIdentity(){ el.sidePeerId.textContent=peerId; el.settingsPeerId.textContent=peerId; el.serverUrl.textContent=location.origin; if(el.profileName)el.profileName.value=profileName; }
   setIdentity();
 
   function toast(message){ el.toast.textContent=message; el.toast.classList.add('show'); clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.toast.classList.remove('show'),2600); }
@@ -56,10 +57,10 @@
   function setPeerUI(connected){
     el.chatInput.disabled=!connected; el.send.disabled=!connected;
     el.chatConnection.textContent=connected?`Connected • ${remotePeer}`:'Not connected';
-    el.chatPeerName.textContent=connected?remotePeer:'No peer connected';
-    el.chatPeerSub.textContent=connected?'Direct encrypted connection':'Connect from Settings';
-    const letter=connected?remotePeer[0]:'?'; el.peerAvatar.textContent=letter; el.infoAvatar.textContent=letter;
-    el.infoPeer.textContent=connected?remotePeer:'Not connected'; el.infoPeerAddress.textContent=connected?remotePeer:'—';
+    el.chatPeerName.textContent=connected?(remotePeerName||remotePeer):'No peer connected';
+    el.chatPeerSub.textContent=connected?'Direct encrypted connection':'Connect from Settings'; if(connected&&remotePeer)loadChatHistory(remotePeer);
+    const letter=connected?(remotePeerName||remotePeer)[0].toUpperCase():'?'; el.peerAvatar.textContent=letter; el.infoAvatar.textContent=letter;
+    el.infoPeer.textContent=connected?(remotePeerName||remotePeer):'Not connected'; el.infoPeerAddress.textContent=connected?remotePeer:'—';
   }
   function showTab(name){
     el.nav.forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
@@ -101,20 +102,30 @@
   el.remote.oninput=e=>e.target.value=normalizeCode(e.target.value);
   el.remote.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();connectPeer()}};
   el.paste.onclick=async()=>{try{el.remote.value=normalizeCode(await navigator.clipboard.readText());el.remote.focus();}catch{el.remote.focus();toast('Paste permission unavailable — type the code')}};
-  async function connectPeer(){
-    const target=normalizeCode(el.remote.value); el.remote.value=target;
-    if(!socket?.connected)return el.connectMessage.textContent='Signaling server is offline.';
-    if(!/^[A-Z0-9]{8}$/.test(target))return el.connectMessage.textContent='Enter the 8-character peer code.';
-    if(target===peerId)return el.connectMessage.textContent='That is your own peer code.';
-    remotePeer=target; el.connectMessage.textContent='Connecting directly…';
+  function loadContacts(){ try{return JSON.parse(localStorage.getItem(storage.contacts)||'[]')}catch{return []} }
+  function saveContact(id,name){ if(!id)return; const list=loadContacts().filter(x=>x.id!==id); list.unshift({id,name:name||id,lastSeen:Date.now()}); localStorage.setItem(storage.contacts,JSON.stringify(list.slice(0,30))); renderContacts(); }
+  function renderContacts(){ if(!el.contacts)return; const list=loadContacts(); el.contacts.innerHTML=''; if(!list.length){el.contacts.innerHTML='<div class="empty-history">No connected peers yet.</div>';return;} list.forEach(x=>{const row=document.createElement('button');row.type='button';row.className='history-row contact-row';row.innerHTML=`<span class="history-icon">●</span><div><strong>${escapeHtml(x.name||x.id)}</strong><small>${escapeHtml(x.id)} • Last connected ${new Date(x.lastSeen).toLocaleDateString()}</small></div>`;row.onclick=()=>{showTab('settings');el.remote.value=x.id;connectPeer(x.id)};el.contacts.appendChild(row)}) }
+  renderContacts();
+  el.clearContacts?.addEventListener('click',()=>{localStorage.removeItem(storage.contacts);renderContacts();toast('Contacts cleared')});
+  el.saveProfile?.addEventListener('click',()=>{profileName=(el.profileName.value.trim().slice(0,40)||'AlfaShare user');localStorage.setItem(storage.name,profileName);el.profileStatus.textContent='Saved ✓';toast('Profile name saved'); if(socket?.connected)socket.emit('register',peerId,{name:profileName},()=>{});});
+
+  async function connectPeer(preferredId){
+    const target=normalizeCode(preferredId || el.remote.value); el.remote.value=target;
+    if(!socket?.connected){el.connectMessage.textContent='Signaling server is offline.';toast('AlfaShare server is offline');return false;}
+    if(!/^[A-Z0-9]{8}$/.test(target)){el.connectMessage.textContent='Enter the 8-character peer code.';return false;}
+    if(target===peerId){el.connectMessage.textContent='That is your own peer code.';return false;}
+    const status=await new Promise(resolve=>socket.emit('check-peer',target,result=>resolve(result||{online:false})));
+    if(!status.online){el.connectMessage.textContent='This peer is offline.';toast(`${status.name||'That peer'} is offline`);return false;}
+    remotePeer=target; remotePeerName=status.name||target; saveContact(target,remotePeerName); setPeerUI(false); el.connectMessage.textContent=`Connecting to ${remotePeerName}…`;
     createPC(target,true);
     try{const offer=await pc.createOffer();await pc.setLocalDescription(offer);signal(target,{type:'offer',sdp:pc.localDescription})}
-    catch(e){console.error(e);el.connectMessage.textContent='Could not start connection.'}
+    catch(e){console.error(e);el.connectMessage.textContent='Could not start connection.';toast('Connection could not be started')}
+    return true;
   }
   el.connect.onclick=connectPeer;
 
-  async function onSignal({from,data}){
-    remotePeer=from;
+  async function onSignal({from,name,data}){
+    remotePeer=from; remotePeerName=name||from; saveContact(from,remotePeerName);
     try{
       if(data.type==='offer'){
         createPC(from,false); await pc.setRemoteDescription(data.sdp);
@@ -129,7 +140,7 @@
   function disconnect(){
     for(const x of outgoing.values())x.cancelled=true;
     try{channel?.close()}catch{} try{pc?.close()}catch{}
-    channel=null;pc=null;remotePeer=null;outgoing.clear();incoming.clear();setPeerUI(false);setServerStatus(socket?.connected?'Server Connected':'Disconnected',!!socket?.connected);el.connectMessage.textContent='Disconnected.';
+    channel=null;pc=null;remotePeer=null;remotePeerName='';outgoing.clear();incoming.clear();setPeerUI(false);setServerStatus(socket?.connected?'Server Connected':'Disconnected',!!socket?.connected);el.connectMessage.textContent='Disconnected.';
   }
   el.chatDisconnect.onclick=disconnect;
 
@@ -141,12 +152,15 @@
     if(kind==='gif'){const img=document.createElement('img');img.src=text;img.alt='GIF';img.loading='lazy';bubble.appendChild(img)}else bubble.appendChild(document.createTextNode(text));
     const meta=document.createElement('small');meta.className='message-meta';meta.textContent=mine?'You':'Peer';bubble.appendChild(meta);row.appendChild(bubble);el.messages.appendChild(row);el.messages.scrollTop=el.messages.scrollHeight;
   }
-  el.chatForm.onsubmit=e=>{e.preventDefault();const text=el.chatInput.value.trim();if(!text)return;try{sendControl({kind:'chat',text,at:Date.now()});addMessage(text,true);el.chatInput.value=''}catch{toast('Connect to a peer first')}};
-  const emojis='😀 😃 😄 😁 😆 😂 🙂 🙃 😉 😊 😍 🥰 😘 😎 🤩 🤔 😮 😢 😭 😡 🤯 ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 👍 👎 👏 🙌 🔥 ✨ 🎉 🎯 🚀 💯 👋 🙏 🤝 😴 🤗 🫶 😇 😈 🤩'.split(' ');
-  emojis.forEach(x=>{const b=document.createElement('button');b.type='button';b.textContent=x;b.onclick=()=>{el.chatInput.value+=x;el.chatInput.focus()};el.emojiPanel.appendChild(b)});
-  el.emojiBtn.onclick=()=>{el.emojiPanel.classList.toggle('hidden');el.gifPanel.classList.add('hidden')};
-  el.gifBtn.onclick=()=>{el.gifPanel.classList.toggle('hidden');el.emojiPanel.classList.add('hidden')};
-  el.sendGif.onclick=()=>{const url=el.gifUrl.value.trim();if(!/^https?:\/\//i.test(url))return toast('Paste a valid GIF URL');try{sendControl({kind:'gif',url});addMessage(url,true,'gif');el.gifUrl.value='';el.gifPanel.classList.add('hidden')}catch{toast('Connect to a peer first')}};
+  function saveChatMessage(peerId,key){ if(!peerId)return; const all=JSON.parse(localStorage.getItem(storage.chats)||'{}'); all[peerId]=all[peerId]||[]; all[peerId].push(key); all[peerId]=all[peerId].slice(-100); localStorage.setItem(storage.chats,JSON.stringify(all)); }
+  function loadChatHistory(id){ if(!el.messages)return; const all=JSON.parse(localStorage.getItem(storage.chats)||'{}'); const list=all[id]||[]; if(!list.length)return; document.querySelector('.empty-chat')?.remove(); list.forEach(m=>addMessage(m.text,m.mine,m.kind,false)); }
+  el.chatForm.onsubmit=e=>{e.preventDefault();const text=el.chatInput.value.trim();if(!text)return;try{sendControl({kind:'chat',text,at:Date.now()});addMessage(text,true,'text');saveChatMessage(remotePeer,{text,mine:true,kind:'text'});el.chatInput.value=''}catch{toast('Connect to a peer first')}};
+  el.attachBtn?.addEventListener('click',()=>el.chatFileInput.click());
+  el.cameraBtn?.addEventListener('click',()=>el.cameraInput.click());
+  el.chatFileInput?.addEventListener('change',()=>{[...el.chatFileInput.files].forEach(sendFile);el.chatFileInput.value=''});
+  el.cameraInput?.addEventListener('change',()=>{[...el.cameraInput.files].forEach(sendFile);el.cameraInput.value=''});
+  el.chatInput?.addEventListener('paste',e=>{const items=[...(e.clipboardData?.items||[])];const image=items.find(i=>i.kind==='file'&&i.type.startsWith('image/'));if(image){const file=image.getAsFile();if(file){e.preventDefault();sendFile(new File([file],`pasted-image-${Date.now()}.${(file.type.split('/')[1]||'png')}`,{type:file.type}))}}});
+  el.chatInput?.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();el.chatForm.requestSubmit()}});
 
   function formatBytes(n){if(!Number.isFinite(n))return '—';const u=['B','KB','MB','GB','TB'];let i=0,v=n;while(v>=1024&&i<u.length-1){v/=1024;i++}return `${v<10&&i?v.toFixed(1):Math.round(v)} ${u[i]}`}
   function formatSpeed(bps){return `${formatBytes(bps)}/s`}
@@ -200,7 +214,7 @@
   async function handleChannelData(data){
     if(typeof data==='string'){
       let m;try{m=JSON.parse(data)}catch{return}
-      if(m.kind==='chat')addMessage(m.text,false);
+      if(m.kind==='chat'){addMessage(m.text,false,'text');saveChatMessage(remotePeer,{text:m.text,mine:false,kind:'text'});}
       else if(m.kind==='gif')addMessage(m.url,false,'gif');
       else if(m.kind==='file-start'){
         // Keep one active incoming file per peer. This makes framing deterministic and memory-safe.
@@ -276,9 +290,10 @@
     socket=io({transports:['websocket','polling'],reconnection:true,reconnectionAttempts:Infinity,reconnectionDelay:1000,reconnectionDelayMax:5000,timeout:10000});
     socket.on('connect',()=>{
       el.serverText.textContent='Signaling connected';setServerStatus('Server Connected',true);
-      socket.emit('register',peerId,result=>{if(!result?.ok){peerId=makePeerId();localStorage.setItem(storage.peer,peerId);setIdentity();socket.emit('register',peerId)}el.connectMessage.textContent='Ready — enter a peer code.'});
+      socket.emit('register',peerId,{name:profileName},result=>{if(!result?.ok){peerId=makePeerId();localStorage.setItem(storage.peer,peerId);setIdentity();socket.emit('register',peerId,{name:profileName})}el.connectMessage.textContent='Ready — enter a peer code.'});
     });
     socket.on('signal',onSignal);
+    socket.on('peer-offline',({peerId:id})=>{el.connectMessage.textContent='This peer is offline.';toast(`${id||'Peer'} is offline`)});
     socket.on('disconnect',()=>{el.serverText.textContent='Signaling offline';if(!pc||pc.connectionState!=='connected')setServerStatus('Disconnected')});
     socket.on('connect_error',()=>{el.serverText.textContent='Cannot reach signaling server';if(!pc||pc.connectionState!=='connected')setServerStatus('Disconnected')});
   }
