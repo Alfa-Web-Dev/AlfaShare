@@ -50,10 +50,12 @@
           <div class="composer-wrap">
             <div id="emojiPanel" class="emoji-panel hidden"></div>
             <div id="gifPanel" class="gif-panel hidden"><div class="gif-row"><input id="gifUrl" placeholder="Paste GIF URL"><button id="sendGif" type="button">Send</button></div><small>Optional GIF search works when a GIPHY key is configured on the signaling server.</small><div id="gifResults" class="gif-results"></div></div>
+            <input id="chatFileInput" type="file" multiple hidden>
+            <input id="cameraInput" type="file" accept="image/*,video/*" capture="environment" hidden>
             <form id="chatForm" class="composer">
-              <button type="button" class="composer-tool" id="emojiBtn">☺</button>
+              <button type="button" class="composer-tool" id="attachBtn" aria-label="Attach file">＋</button>
               <input id="chatInput" maxlength="4000" placeholder="Message" autocomplete="off" disabled>
-              <button type="button" class="composer-tool gif-tool" id="gifBtn">GIF</button>
+              <button type="button" class="composer-tool" id="cameraBtn" aria-label="Camera">⌾</button>
               <button class="send-button" id="sendBtn" aria-label="Send" disabled>➤</button>
             </form>
           </div>
@@ -71,7 +73,7 @@
       <div class="share-layout">
         <section class="panel share-main">
           <div class="section-heading"><div><span class="eyebrow">SEND FILES</span><h2>Drop files here</h2></div><span class="p2p-chip">P2P</span></div>
-          <div class="dropzone" id="dropzone"><input id="fileInput" type="file" multiple hidden><div class="drop-icon">↥</div><h3>Drag & drop</h3><p>Or choose one or more files from your device.</p><button class="primary" id="chooseFiles" type="button">Choose files</button><small>Large-file mode • 64 KB chunks • backpressure • direct WebRTC</small></div>
+          <div class="dropzone" id="dropzone"><input id="fileInput" type="file" multiple hidden><div class="drop-icon">↥</div><h3>Drag & drop</h3><p>Or choose one or more files from your device.</p><button class="primary" id="chooseFiles" type="button">Choose files</button><small>Large-file mode • 128 KB chunks • high-speed backpressure • direct WebRTC</small></div>
           <div class="transfer-list" id="transfers"></div>
         </section>
         <section class="panel history-panel"><div class="section-heading"><div><span class="eyebrow">LOCAL HISTORY</span><h2>Recent transfers</h2></div><button class="text-button" id="clearHistory">Clear</button></div><div id="history" class="history"></div></section>
@@ -83,6 +85,8 @@
       <div class="settings-layout">
         <section class="panel identity-card"><span class="eyebrow">YOUR PEER CODE</span><h2>Share this code</h2><p>It is short, easy to type and unique to this browser.</p><div class="code-display"><strong id="settingsPeerId">••••••••</strong><button id="copySettingsId">Copy</button></div><div class="server-line"><span>Signaling</span><strong id="serverUrl">—</strong></div></section>
         <section class="panel connect-card"><span class="eyebrow">CONNECT</span><h2>Connect to someone</h2><p>Enter their 8-character peer code.</p><div class="connect-row"><input id="remotePeerId" maxlength="8" inputmode="text" autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="AB12CD34"><button id="pastePeerBtn" type="button" class="secondary">Paste</button><button id="connectBtn" type="button" class="primary">Connect</button></div><p id="connectMessage" class="form-message"></p></section>
+        <section class="panel profile-card"><span class="eyebrow">YOUR PROFILE</span><h2>Your name</h2><p>This name is shown to people when you connect.</p><div class="profile-row"><input id="profileName" maxlength="40" placeholder="Your name" autocomplete="nickname"><button id="saveProfile" class="primary" type="button">Save</button></div><span id="profileStatus" class="install-status"></span></section>
+        <section class="panel contacts-panel"><div class="section-heading"><div><span class="eyebrow">CONTACTS</span><h2>Recent peers</h2></div><button class="text-button" id="clearContacts">Clear</button></div><div id="contacts" class="history"></div></section>
         <section class="panel"><div class="section-heading"><div><span class="eyebrow">APPEARANCE</span><h2>Theme</h2></div></div><div id="themes" class="themes">
           <button data-theme="dark"><i></i>Dark</button><button data-theme="white"><i></i>White</button><button data-theme="blue"><i></i>Blue</button><button data-theme="green"><i></i>Green</button><button data-theme="pink"><i></i>Pink</button><button data-theme="red"><i></i>Red</button><button data-theme="neon"><i></i>Neon</button><button data-theme="purple"><i></i>Purple</button><button data-theme="orange"><i></i>Orange</button><button data-theme="cyan"><i></i>Cyan</button><button data-theme="sunset"><i></i>Sunset</button><button data-theme="violet"><i></i>Violet</button>
         </div></section>
