@@ -1,5 +1,76 @@
-const CACHE='alfashare-v4-1';
-const CORE=['/','/index.html','/css/style.css','/js/app.js','/manifest.json','/icon.svg'];
-self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(CORE)).then(()=>self.skipWaiting())));
-self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
-self.addEventListener('fetch',e=>{if(e.request.method!=='GET'||new URL(e.request.url).origin!==location.origin)return;e.respondWith(fetch(e.request).then(r=>{const copy=r.clone();caches.open(CACHE).then(c=>c.put(e.request,copy));return r}).catch(()=>caches.match(e.request).then(r=>r||caches.match('/index.html')))});
+const CACHE_NAME = "alfashare-v2";
+
+const APP_SHELL = [
+    "/",
+    "/index.html",
+    "/manifest.json",
+    "/css/style.css",
+    "/js/app.js",
+    "/icon.svg"
+];
+
+self.addEventListener("install", event => {
+    event.waitUntil(
+        caches.open(CACHE_NAME)
+            .then(cache => cache.addAll(APP_SHELL))
+            .then(() => self.skipWaiting())
+    );
+});
+
+self.addEventListener("activate", event => {
+    event.waitUntil(
+        caches.keys().then(keys => {
+            return Promise.all(
+                keys
+                    .filter(key => key !== CACHE_NAME)
+                    .map(key => caches.delete(key))
+            );
+        }).then(() => self.clients.claim())
+    );
+});
+
+self.addEventListener("fetch", event => {
+    if (event.request.method !== "GET") {
+        return;
+    }
+
+    const requestURL = new URL(event.request.url);
+
+    // API, Socket.IO aur server requests ko cache mat karo.
+    if (
+        requestURL.pathname.startsWith("/socket.io/") ||
+        requestURL.pathname.startsWith("/api/")
+    ) {
+        return;
+    }
+
+    event.respondWith(
+        caches.match(event.request).then(cached => {
+            if (cached) {
+                return cached;
+            }
+
+            return fetch(event.request)
+                .then(response => {
+                    if (
+                        !response ||
+                        response.status !== 200 ||
+                        response.type === "opaque"
+                    ) {
+                        return response;
+                    }
+
+                    const copy = response.clone();
+
+                    caches.open(CACHE_NAME).then(cache => {
+                        cache.put(event.request, copy);
+                    });
+
+                    return response;
+                })
+                .catch(() => {
+                    return caches.match("/index.html");
+                });
+        })
+    );
+});
