@@ -1,4 +1,4 @@
-const CACHE_NAME = "alfashare-v2";
+const CACHE_NAME = "alfashare-v3";
 
 const APP_SHELL = [
     "/",
