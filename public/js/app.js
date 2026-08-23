@@ -9,7 +9,7 @@
        CONFIG
     ===================================================== */
 
-    const CHUNK_SIZE = 16 * 1024;
+    const CHUNK_SIZE = 64 * 1024;
 
     const MAX_BUFFERED_AMOUNT = 4 * 1024 * 1024;
 
