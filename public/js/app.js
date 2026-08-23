@@ -13,7 +13,7 @@
 
     const MAX_BUFFERED_AMOUNT = 16 * 1024 * 1024;
 
-    const BUFFERED_LOW_THRESHOLD = 512 * 1024;
+   const BUFFERED_LOW_THRESHOLD = 4 * 1024 * 1024;
 
     const ICE_SERVERS = [
         {
