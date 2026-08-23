@@ -1,103 +1,706 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0b0f17">
-<meta name="color-scheme" content="dark light">
-<meta name="description" content="AlfaShare — simple, fast and private peer-to-peer chat and large file sharing.">
-<link rel="manifest" href="/manifest.json">
-<link rel="icon" href="/icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/css/style.css">
-<title>AlfaShare</title>
-</head>
-<body>
-<div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
-<div class="app-shell">
-  <aside class="sidebar" id="sidebar">
-    <button class="sidebar-close" id="closeMenuBtn" aria-label="Close menu">×</button>
-    <div class="brand">
-      <div class="brand-mark">A</div>
-      <div><strong>AlfaShare</strong><span>Private • P2P</span></div>
-    </div>
-    <div class="server-state"><span id="statusDot" class="status-dot"></span><div><strong id="statusText">Connecting…</strong><span id="serverText">Starting secure signaling</span></div></div>
-    <nav class="nav" aria-label="Primary">
-      <button class="nav-item active" data-tab="chat"><span class="nav-icon">◔</span><span>Chat</span><b id="chatBadge"></b></button>
-      <button class="nav-item" data-tab="share"><span class="nav-icon">↥</span><span>Share</span></button>
-      <button class="nav-item" data-tab="settings"><span class="nav-icon">⚙</span><span>Settings</span></button>
-    </nav>
-    <div class="identity-mini"><span>Your peer code</span><strong id="sidePeerId">••••••••</strong><button id="copySideId">Copy</button></div>
-    <div class="side-note"><span>●</span> Files never upload to AlfaShare</div>
-  </aside>
 
-  <main class="main">
-    <header class="mobile-header">
-      <button id="menuBtn" class="icon-button" aria-label="Open menu">☰</button>
-      <div class="mobile-brand"><span class="brand-mark small">A</span><strong>AlfaShare</strong></div>
-      <span id="mobileStatus" class="status-dot"></span>
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    >
+
+    <meta
+        name="theme-color"
+        content="#0b0f17"
+    >
+
+    <meta
+        name="description"
+        content="AlfaShare - Fast direct peer-to-peer file sharing and chat"
+    >
+
+    <link
+        rel="manifest"
+        href="/manifest.json"
+    >
+
+    <link
+        rel="icon"
+        href="/icon.svg"
+        type="image/svg+xml"
+    >
+
+    <link
+        rel="stylesheet"
+        href="/style.css"
+    >
+
+    <title>AlfaShare</title>
+</head>
+
+<body>
+
+<div class="app-shell">
+
+    <!-- =====================================
+         TOP HEADER
+    ====================================== -->
+
+    <header class="topbar">
+
+        <div class="brand">
+
+            <div class="brand-logo">
+                A
+            </div>
+
+            <div class="brand-info">
+
+                <strong>
+                    AlfaShare
+                </strong>
+
+                <span id="connectionStatus">
+                    Connecting...
+                </span>
+
+            </div>
+
+        </div>
+
+        <div
+            class="connection-dot"
+            id="connectionDot"
+        ></div>
+
     </header>
 
-    <section class="tab active" id="tab-chat">
-      <div class="topbar"><div><span class="eyebrow">PRIVATE MESSAGES</span><h1>Chat</h1><p>Simple conversations over your direct encrypted connection.</p></div><div class="connection-pill"><span class="status-dot"></span><span id="chatConnection">Not connected</span></div></div>
-      <div class="chat-layout">
-        <section class="chat-card">
-          <div class="chat-header">
-            <div class="peer-avatar" id="peerAvatar">?</div>
-            <div class="peer-title"><strong id="chatPeerName">No peer connected</strong><span id="chatPeerSub">Connect from Settings</span></div>
-            <button class="header-action" id="chatDisconnect" title="Disconnect">Disconnect</button>
-          </div>
-          <div class="messages" id="messages"><div class="empty-chat"><div class="empty-icon">✦</div><h2>Your private chat</h2><p>Connect a peer to start messaging, send emoji or share a GIF.</p><button class="link-button" id="openSettings">Connect a peer →</button></div></div>
-          <div class="composer-wrap">
-            <div id="emojiPanel" class="emoji-panel hidden"></div>
-            <div id="gifPanel" class="gif-panel hidden"><div class="gif-row"><input id="gifUrl" placeholder="Paste GIF URL"><button id="sendGif" type="button">Send</button></div><small>Optional GIF search works when a GIPHY key is configured on the signaling server.</small><div id="gifResults" class="gif-results"></div></div>
-            <input id="chatFileInput" type="file" multiple hidden>
-            <input id="cameraInput" type="file" accept="image/*,video/*" capture="environment" hidden>
-            <form id="chatForm" class="composer">
-              <button type="button" class="composer-tool" id="attachBtn" aria-label="Attach file">＋</button>
-              <input id="chatInput" maxlength="4000" placeholder="Message" autocomplete="off" disabled>
-              <button type="button" class="composer-tool" id="cameraBtn" aria-label="Camera">⌾</button>
-              <button class="send-button" id="sendBtn" aria-label="Send" disabled>➤</button>
-            </form>
-          </div>
-        </section>
-        <aside class="chat-details panel">
-          <span class="eyebrow">CONNECTED PEER</span><div class="details-avatar" id="infoAvatar">?</div><h3 id="infoPeer">Not connected</h3><code id="infoPeerAddress">—</code>
-          <div class="security"><span>✓</span><div><strong>End-to-end encrypted</strong><small>WebRTC DTLS DataChannel</small></div></div>
-          <button class="primary full" id="openSettings2">Connect another peer</button>
-        </aside>
-      </div>
-    </section>
 
-    <section class="tab" id="tab-share">
-      <div class="topbar"><div><span class="eyebrow">DIRECT TRANSFER</span><h1>Share</h1><p>Send photos, videos, documents and large files directly to a peer.</p></div><div class="speed-box"><strong id="speedStat">—</strong><span>current speed</span></div></div>
-      <div class="share-layout">
-        <section class="panel share-main">
-          <div class="section-heading"><div><span class="eyebrow">SEND FILES</span><h2>Drop files here</h2></div><span class="p2p-chip">P2P</span></div>
-          <div class="dropzone" id="dropzone"><input id="fileInput" type="file" multiple hidden><div class="drop-icon">↥</div><h3>Drag & drop</h3><p>Or choose one or more files from your device.</p><button class="primary" id="chooseFiles" type="button">Choose files</button><small>Large-file mode • 128 KB chunks • high-speed backpressure • direct WebRTC</small></div>
-          <div class="transfer-list" id="transfers"></div>
-        </section>
-        <section class="panel history-panel"><div class="section-heading"><div><span class="eyebrow">LOCAL HISTORY</span><h2>Recent transfers</h2></div><button class="text-button" id="clearHistory">Clear</button></div><div id="history" class="history"></div></section>
-      </div>
-    </section>
+    <!-- =====================================
+         MAIN CONTENT
+    ====================================== -->
 
-    <section class="tab" id="tab-settings">
-      <div class="topbar"><div><span class="eyebrow">CONTROL CENTER</span><h1>Settings</h1><p>Connect, personalize and install AlfaShare.</p></div></div>
-      <div class="settings-layout">
-        <section class="panel identity-card"><span class="eyebrow">YOUR PEER CODE</span><h2>Share this code</h2><p>It is short, easy to type and unique to this browser.</p><div class="code-display"><strong id="settingsPeerId">••••••••</strong><button id="copySettingsId">Copy</button></div><div class="server-line"><span>Signaling</span><strong id="serverUrl">—</strong></div></section>
-        <section class="panel connect-card"><span class="eyebrow">CONNECT</span><h2>Connect to someone</h2><p>Enter their 8-character peer code.</p><div class="connect-row"><input id="remotePeerId" maxlength="8" inputmode="text" autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="AB12CD34"><button id="pastePeerBtn" type="button" class="secondary">Paste</button><button id="connectBtn" type="button" class="primary">Connect</button></div><p id="connectMessage" class="form-message"></p></section>
-        <section class="panel profile-card"><span class="eyebrow">YOUR PROFILE</span><h2>Your name</h2><p>This name is shown to people when you connect.</p><div class="profile-row"><input id="profileName" maxlength="40" placeholder="Your name" autocomplete="nickname"><button id="saveProfile" class="primary" type="button">Save</button></div><span id="profileStatus" class="install-status"></span></section>
-        <section class="panel contacts-panel"><div class="section-heading"><div><span class="eyebrow">CONTACTS</span><h2>Recent peers</h2></div><button class="text-button" id="clearContacts">Clear</button></div><div id="contacts" class="history"></div></section>
-        <section class="panel"><div class="section-heading"><div><span class="eyebrow">APPEARANCE</span><h2>Theme</h2></div></div><div id="themes" class="themes">
-          <button data-theme="dark"><i></i>Dark</button><button data-theme="white"><i></i>White</button><button data-theme="blue"><i></i>Blue</button><button data-theme="green"><i></i>Green</button><button data-theme="pink"><i></i>Pink</button><button data-theme="red"><i></i>Red</button><button data-theme="neon"><i></i>Neon</button><button data-theme="purple"><i></i>Purple</button><button data-theme="orange"><i></i>Orange</button><button data-theme="cyan"><i></i>Cyan</button><button data-theme="sunset"><i></i>Sunset</button><button data-theme="violet"><i></i>Violet</button>
-        </div></section>
-        <section class="panel install-card"><span class="eyebrow">APP</span><h2>Install AlfaShare</h2><p>Get the full-screen app experience and faster launch.</p><button id="installBtn" class="primary">Install App</button><span id="installStatus" class="install-status"></span></section>
-        <section class="panel privacy-card"><span class="eyebrow">PRIVACY</span><h2>Built for direct sharing</h2><div class="privacy-grid"><div><strong>01</strong><span>Server</span><p>Only coordinates peer discovery and WebRTC signaling.</p></div><div><strong>02</strong><span>Transfer</span><p>Files and chat travel over the encrypted P2P DataChannel.</p></div><div><strong>03</strong><span>History</span><p>Transfer history stays in your browser.</p></div></div></section>
-      </div>
-    </section>
-  </main>
+    <main class="main-content">
+
+
+        <!-- =================================
+             SHARE SECTION
+        ================================== -->
+
+        <section
+            class="page active"
+            id="sharePage"
+        >
+
+            <div class="page-heading">
+
+                <div>
+
+                    <h1>
+                        Share
+                    </h1>
+
+                    <p>
+                        Send files directly to another device
+                    </p>
+
+                </div>
+
+            </div>
+
+
+            <!-- PEER CONNECTION CARD -->
+
+            <div class="card connect-card">
+
+                <div class="card-title">
+
+                    <div class="title-icon">
+                        ⇄
+                    </div>
+
+                    <div>
+
+                        <strong>
+                            Connect to a peer
+                        </strong>
+
+                        <span>
+                            Enter their AlfaShare code
+                        </span>
+
+                    </div>
+
+                </div>
+
+
+                <div class="peer-input-row">
+
+                    <input
+                        type="text"
+                        id="peerCodeInput"
+                        placeholder="Enter peer code"
+                        autocomplete="off"
+                        autocapitalize="characters"
+                        spellcheck="false"
+                    >
+
+                    <button
+                        class="primary-btn"
+                        id="connectBtn"
+                    >
+                        Connect
+                    </button>
+
+                </div>
+
+
+                <div
+                    class="connected-peer"
+                    id="connectedPeer"
+                    hidden
+                >
+
+                    <div class="peer-avatar">
+                        A
+                    </div>
+
+                    <div class="peer-details">
+
+                        <strong id="connectedPeerName">
+                            Peer
+                        </strong>
+
+                        <span id="connectedPeerStatus">
+                            Connected
+                        </span>
+
+                    </div>
+
+                    <button
+                        class="icon-btn danger"
+                        id="disconnectBtn"
+                        title="Disconnect"
+                    >
+                        ×
+                    </button>
+
+                </div>
+
+            </div>
+
+
+            <!-- FILE DROP AREA -->
+
+            <div
+                class="drop-zone"
+                id="dropZone"
+            >
+
+                <div class="drop-icon">
+                    ↑
+                </div>
+
+                <h2>
+                    Send a file
+                </h2>
+
+                <p>
+                    Drag & drop a file here
+                    <br>
+                    or choose one from your device
+                </p>
+
+                <button
+                    class="primary-btn large"
+                    id="chooseFileBtn"
+                >
+                    Choose File
+                </button>
+
+                <input
+                    type="file"
+                    id="fileInput"
+                    hidden
+                >
+
+                <small>
+                    Files are transferred directly between peers
+                </small>
+
+            </div>
+
+
+            <!-- TRANSFER LIST -->
+
+            <div class="section-heading">
+
+                <div>
+
+                    <h2>
+                        Transfers
+                    </h2>
+
+                    <span>
+                        Current file activity
+                    </span>
+
+                </div>
+
+                <button
+                    class="text-btn"
+                    id="clearTransfersBtn"
+                >
+                    Clear
+                </button>
+
+            </div>
+
+
+            <div
+                class="transfer-list"
+                id="transferList"
+            >
+
+                <div class="empty-state">
+
+                    <div>
+                        ↑
+                    </div>
+
+                    <p>
+                        No active transfers
+                    </p>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- =================================
+             CHAT SECTION
+        ================================== -->
+
+        <section
+            class="page"
+            id="chatPage"
+        >
+
+            <div class="chat-header">
+
+                <div class="chat-peer-avatar">
+                    A
+                </div>
+
+                <div class="chat-peer-info">
+
+                    <strong id="chatPeerName">
+                        No peer connected
+                    </strong>
+
+                    <span id="chatPeerStatus">
+                        Connect to start chatting
+                    </span>
+
+                </div>
+
+            </div>
+
+
+            <div
+                class="messages"
+                id="messages"
+            >
+
+                <div class="chat-empty">
+
+                    <div class="chat-empty-icon">
+                        💬
+                    </div>
+
+                    <h3>
+                        Your private chat
+                    </h3>
+
+                    <p>
+                        Messages are sent directly
+                        between connected devices.
+                    </p>
+
+                </div>
+
+            </div>
+
+
+            <!-- CHAT COMPOSER -->
+
+            <div class="chat-composer">
+
+                <button
+                    class="composer-btn"
+                    id="emojiBtn"
+                    title="Emoji"
+                >
+                    ☺
+                </button>
+
+                <button
+                    class="composer-btn"
+                    id="chatFileBtn"
+                    title="Send file"
+                >
+                    +
+                </button>
+
+                <input
+                    type="text"
+                    id="messageInput"
+                    placeholder="Message"
+                    autocomplete="off"
+                    maxlength="5000"
+                >
+
+                <button
+                    class="send-btn"
+                    id="sendMessageBtn"
+                    title="Send"
+                >
+                    ➤
+                </button>
+
+            </div>
+
+
+            <!-- SIMPLE EMOJI PANEL -->
+
+            <div
+                class="emoji-panel"
+                id="emojiPanel"
+                hidden
+            >
+
+                <button>😀</button>
+                <button>😂</button>
+                <button>🤣</button>
+                <button>😊</button>
+                <button>😍</button>
+                <button>🥰</button>
+                <button>😘</button>
+                <button>😎</button>
+                <button>🤔</button>
+                <button>😢</button>
+                <button>😭</button>
+                <button>😡</button>
+                <button>👍</button>
+                <button>👎</button>
+                <button>❤️</button>
+                <button>🔥</button>
+                <button>🎉</button>
+                <button>👏</button>
+                <button>🙏</button>
+                <button>🚀</button>
+
+            </div>
+
+        </section>
+
+
+        <!-- =================================
+             SETTINGS SECTION
+        ================================== -->
+
+        <section
+            class="page"
+            id="settingsPage"
+        >
+
+            <div class="page-heading">
+
+                <div>
+
+                    <h1>
+                        Settings
+                    </h1>
+
+                    <p>
+                        Your AlfaShare identity
+                    </p>
+
+                </div>
+
+            </div>
+
+
+            <!-- PROFILE -->
+
+            <div class="card profile-card">
+
+                <div class="profile-avatar">
+                    <span id="profileAvatar">
+                        A
+                    </span>
+                </div>
+
+                <div class="profile-info">
+
+                    <label>
+                        Your name
+                    </label>
+
+                    <input
+                        type="text"
+                        id="nameInput"
+                        placeholder="Enter your name"
+                        maxlength="40"
+                    >
+
+                </div>
+
+            </div>
+
+
+            <!-- PEER CODE -->
+
+            <div class="card identity-card">
+
+                <div class="card-title">
+
+                    <div class="title-icon">
+                        #
+                    </div>
+
+                    <div>
+
+                        <strong>
+                            Your peer code
+                        </strong>
+
+                        <span>
+                            Share this code with someone
+                            you want to connect with
+                        </span>
+
+                    </div>
+
+                </div>
+
+
+                <div class="my-code">
+
+                    <strong id="myPeerCode">
+                        Loading...
+                    </strong>
+
+                    <button
+                        class="secondary-btn"
+                        id="copyPeerCodeBtn"
+                    >
+                        Copy
+                    </button>
+
+                </div>
+
+                <small class="privacy-note">
+                    Your peer code is stored on this device.
+                </small>
+
+            </div>
+
+
+            <!-- THEME -->
+
+            <div class="card">
+
+                <div class="card-title">
+
+                    <div class="title-icon">
+                        ◐
+                    </div>
+
+                    <div>
+
+                        <strong>
+                            Appearance
+                        </strong>
+
+                        <span>
+                            Choose your preferred theme
+                        </span>
+
+                    </div>
+
+                </div>
+
+
+                <div class="theme-grid">
+
+                    <button
+                        class="theme-option"
+                        data-theme="dark"
+                    >
+                        <i class="theme-preview dark-preview"></i>
+                        <span>Dark</span>
+                    </button>
+
+                    <button
+                        class="theme-option"
+                        data-theme="light"
+                    >
+                        <i class="theme-preview light-preview"></i>
+                        <span>White</span>
+                    </button>
+
+                    <button
+                        class="theme-option"
+                        data-theme="blue"
+                    >
+                        <i class="theme-preview blue-preview"></i>
+                        <span>Blue</span>
+                    </button>
+
+                    <button
+                        class="theme-option"
+                        data-theme="green"
+                    >
+                        <i class="theme-preview green-preview"></i>
+                        <span>Green</span>
+                    </button>
+
+                    <button
+                        class="theme-option"
+                        data-theme="pink"
+                    >
+                        <i class="theme-preview pink-preview"></i>
+                        <span>Pink</span>
+                    </button>
+
+                    <button
+                        class="theme-option"
+                        data-theme="red"
+                    >
+                        <i class="theme-preview red-preview"></i>
+                        <span>Red</span>
+                    </button>
+
+                    <button
+                        class="theme-option"
+                        data-theme="neon"
+                    >
+                        <i class="theme-preview neon-preview"></i>
+                        <span>Neon</span>
+                    </button>
+
+                </div>
+
+            </div>
+
+
+            <!-- ABOUT -->
+
+            <div class="card about-card">
+
+                <strong>
+                    AlfaShare
+                </strong>
+
+                <p>
+                    Direct peer-to-peer sharing
+                    with minimal server usage.
+                </p>
+
+                <small>
+                    Version 1.0 Core
+                </small>
+
+            </div>
+
+        </section>
+
+    </main>
+
+
+    <!-- =====================================
+         BOTTOM NAVIGATION
+    ====================================== -->
+
+    <nav class="bottom-nav">
+
+        <button
+            class="nav-item active"
+            data-page="sharePage"
+        >
+
+            <span class="nav-icon">
+                ↑
+            </span>
+
+            <span>
+                Share
+            </span>
+
+        </button>
+
+
+        <button
+            class="nav-item"
+            data-page="chatPage"
+        >
+
+            <span class="nav-icon">
+                💬
+            </span>
+
+            <span>
+                Chat
+            </span>
+
+        </button>
+
+
+        <button
+            class="nav-item"
+            data-page="settingsPage"
+        >
+
+            <span class="nav-icon">
+                ⚙
+            </span>
+
+            <span>
+                Settings
+            </span>
+
+        </button>
+
+    </nav>
+
 </div>
-<div id="toast" class="toast"></div>
+
+
+<!-- =====================================
+     TOAST
+====================================== -->
+
+<div
+    class="toast"
+    id="toast"
+></div>
+
+
+<!-- =====================================
+     SOCKET.IO
+====================================== -->
+
 <script src="/socket.io/socket.io.js"></script>
-<script src="/js/app.js"></script>
+
+<!-- =====================================
+     APP
+====================================== -->
+
+<script src="/app.js"></script>
+
 </body>
+
 </html>
