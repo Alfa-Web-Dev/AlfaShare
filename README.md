@@ -1,22 +1,28 @@
-# AlfaShare 3.0
+# AlfaShare 4.0
 
-Simple, fast and private peer-to-peer chat and large-file sharing.
+Fast, private, direct peer-to-peer chat and large-file sharing.
 
-## Architecture
-- Node.js + Express + Socket.IO for signaling only.
-- WebRTC DataChannel for chat and file bytes.
-- STUN for NAT traversal.
-- No database and no cloud file storage.
-- PWA manifest + service worker.
-
-## Large-file mode
-Files are sent as ordered 64 KB chunks with WebRTC backpressure and acknowledgements. On browsers supporting Origin Private File System (OPFS), received chunks are written incrementally to local storage instead of keeping the whole file in RAM.
-
-For the best large-file experience, use a current Chromium-based browser. Direct P2P still depends on the two networks being able to establish a WebRTC route; this build intentionally does not add a paid TURN relay.
+## Highlights
+- Stable 8-character peer code stored in browser local storage.
+- Peer display name and recent peer contacts stored locally.
+- Offline-peer check before starting a WebRTC offer.
+- WebRTC DataChannel for chat and file bytes; Socket.IO is signaling only.
+- 64 KiB chunks with high-water backpressure and 8 MiB ACK windows.
+- OPFS-backed receiving on supported browsers to avoid assembling large files in RAM.
+- Transfer speed, progress and ETA.
+- Chat message history per peer.
+- Camera/file attachments and pasted images.
+- Responsive WhatsApp-inspired chat UI.
+- PWA with cache versioning and install support.
+- No database and no server-side file storage.
 
 ## Run
 ```bash
 npm install
 npm start
 ```
-Open `http://localhost:3000`.
+
+The signaling server uses `PORT` supplied by the hosting provider. Files are not sent through Socket.IO.
+
+## Notes
+Direct P2P is subject to NAT/firewall conditions. STUN is configured; some restrictive networks require a TURN relay for connectivity.
